@@ -1,0 +1,18 @@
+{
+  "name": "camadas",
+  "version": "1.0.0",
+  "description": "Camadas de Fluxo: editor de diagramas por níveis, com contas de utilizador e MariaDB",
+  "main": "src/server.js",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "create-admin": "node src/cli.js create-admin"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mysql2": "3.11.3"
+  }
+}

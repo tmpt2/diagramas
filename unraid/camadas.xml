@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>camadas</Name>
+  <Repository>ghcr.io/tmpt2/diagramas:latest</Repository>
+  <Registry>https://github.com/tmpt2/diagramas/pkgs/container/diagramas</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/tmpt2/diagramas</Support>
+  <Project>https://github.com/tmpt2/diagramas</Project>
+  <Overview>Camadas: editor de diagramas de fluxo em até 4 níveis, com contas de utilizador. Guarda tudo numa base de dados MariaDB/MySQL (por exemplo o contentor MariaDB do Unraid). O contentor não precisa de volumes.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/tmpt2/diagramas/main/public/favicon.svg</Icon>
+  <ExtraParams>--init</ExtraParams>
+  <Config Name="WebUI" Target="3000" Default="3000" Mode="tcp" Description="Porta da interface web" Type="Port" Display="always" Required="true" Mask="false">3000</Config>
+  <Config Name="DB_HOST" Target="DB_HOST" Default="" Mode="" Description="IP do Unraid (ex. 192.168.1.10) ou nome do contentor MariaDB se estiverem numa rede Docker personalizada" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="DB_PORT" Target="DB_PORT" Default="3306" Mode="" Description="Porta da MariaDB" Type="Variable" Display="always" Required="true" Mask="false">3306</Config>
+  <Config Name="DB_NAME" Target="DB_NAME" Default="camadas" Mode="" Description="Nome da base de dados" Type="Variable" Display="always" Required="true" Mask="false">camadas</Config>
+  <Config Name="DB_USER" Target="DB_USER" Default="camadas" Mode="" Description="Utilizador da MariaDB" Type="Variable" Display="always" Required="true" Mask="false">camadas</Config>
+  <Config Name="DB_PASSWORD" Target="DB_PASSWORD" Default="" Mode="" Description="Password da MariaDB" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="ADMIN_EMAIL" Target="ADMIN_EMAIL" Default="" Mode="" Description="Email do primeiro administrador (criado no primeiro arranque)" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="ADMIN_PASSWORD" Target="ADMIN_PASSWORD" Default="" Mode="" Description="Password inicial do administrador. Mude-a depois de entrar e pode apagar este valor." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="ADMIN_NAME" Target="ADMIN_NAME" Default="Administrador" Mode="" Description="Nome do administrador" Type="Variable" Display="advanced" Required="false" Mask="false">Administrador</Config>
+  <Config Name="ALLOW_REGISTRATION" Target="ALLOW_REGISTRATION" Default="false" Mode="" Description="true = qualquer pessoa pode criar conta; false = só o administrador cria contas" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <Config Name="EXAMPLE_FOR_NEW_USERS" Target="EXAMPLE_FOR_NEW_USERS" Default="true" Mode="" Description="Novas contas recebem o diagrama de exemplo" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="SESSION_DAYS" Target="SESSION_DAYS" Default="30" Mode="" Description="Duração da sessão em dias" Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+  <Config Name="DB_TABLE_PREFIX" Target="DB_TABLE_PREFIX" Default="camadas_" Mode="" Description="Prefixo das tabelas" Type="Variable" Display="advanced" Required="false" Mask="false">camadas_</Config>
+  <Config Name="DB_SSL" Target="DB_SSL" Default="false" Mode="" Description="Ligação cifrada à MariaDB: false | true | skip-verify" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="APP_NAME" Target="APP_NAME" Default="Camadas" Mode="" Description="Nome mostrado na aplicação" Type="Variable" Display="advanced" Required="false" Mask="false">Camadas</Config>
+  <Config Name="TRUST_PROXY" Target="TRUST_PROXY" Default="true" Mode="" Description="true se estiver atrás de um proxy (Nginx Proxy Manager, SWAG, Traefik)" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="COOKIE_SECURE" Target="COOKIE_SECURE" Default="auto" Mode="" Description="Cookie só por HTTPS: auto | true | false" Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+</Container>

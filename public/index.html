@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Camadas</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="boot" id="boot">A carregar…</div>
+
+<div class="auth hide" id="auth">
+  <form class="authcard" id="authForm" novalidate>
+    <div class="authbrand">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path class="b1" d="M12 3 3 7.5 12 12l9-4.5L12 3Z"/><path class="b2" d="m3 12 9 4.5 9-4.5" stroke-width="2"/><path class="b3" d="m3 16.5 9 4.5 9-4.5" stroke-width="2"/></svg>
+      <span id="authBrand">Camadas</span>
+    </div>
+    <p class="authlead">Diagramas de fluxo em até 4 níveis de detalhe.</p>
+    <h1 id="authTitle">Entrar</h1>
+    <p class="authnote hide" id="authNote"></p>
+    <div class="field hide" id="nameRow"><label for="a-name">Nome</label><input id="a-name" autocomplete="name" maxlength="120"></div>
+    <div class="field"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="username" required></div>
+    <div class="field"><label for="a-pass">Password</label><input id="a-pass" type="password" autocomplete="current-password" required></div>
+    <p class="ferr" id="authErr" role="alert"></p>
+    <button class="pbig" type="submit" id="authSubmit">Entrar</button>
+    <p class="authswitch hide" id="authSwitch"></p>
+  </form>
+</div>
+<div class="app hide" id="app">
+  <header class="top">
+    <button class="tbtn icon-only" id="toggleTree" title="Mostrar/ocultar mapa de diagramas" aria-label="Mostrar ou ocultar mapa de diagramas">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+    </button>
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path class="b1" d="M12 3 3 7.5 12 12l9-4.5L12 3Z"/><path class="b2" d="m3 12 9 4.5 9-4.5" stroke-width="2"/><path class="b3" d="m3 16.5 9 4.5 9-4.5" stroke-width="2"/></svg>
+      <b>Camadas</b>
+    </div>
+    <nav class="crumbs" id="crumbs" aria-label="Níveis"></nav>
+    <div class="status" id="status"><i></i><span>A ligar…</span></div>
+    <button class="tbtn icon-only" id="undoBtn" title="Anular (Ctrl+Z)" aria-label="Anular">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+    </button>
+    <button class="tbtn hide-sm" id="exportBtn" title="Exportar tudo em JSON">Exportar</button>
+    <label class="tbtn hide-sm" for="importFile" title="Importar ficheiro JSON" tabindex="0">Importar</label>
+    <input type="file" id="importFile" accept=".json,application/json">
+    <div class="umenu">
+      <button class="tbtn userbtn" id="userBtn" aria-haspopup="menu" aria-expanded="false" title="Conta"><span class="avatar" id="avatar"></span><span id="userName" class="hide-sm uname"></span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></button>
+      <div class="dropdown hide" id="userDrop" role="menu">
+        <div class="who" id="menuWho"></div>
+        <button role="menuitem" id="mPass">Perfil e password</button>
+        <button role="menuitem" id="mUsers" class="hide">Gerir utilizadores</button>
+        <button role="menuitem" id="mExport">Exportar diagramas (JSON)</button>
+        <label role="menuitem" for="importFile" class="mi">Importar diagramas…</label>
+        <hr>
+        <button role="menuitem" id="mLogout">Sair</button>
+      </div>
+    </div>
+  </header>
+
+  <aside class="tree" id="tree">
+    <h2>Mapa de diagramas</h2>
+    <ul id="treeList"></ul>
+    <div class="legend" id="legend"></div>
+    <div class="help">
+      <b data-s="color:var(--ink)">Como usar</b><br>
+      Duplo clique numa caixa para entrar no nível seguinte. Arraste o ponto lateral para ligar a outra caixa. Duplo clique no fundo cria uma atividade.<br>
+      <kbd>Enter</kbd> entrar · <kbd>Esc</kbd> subir · <kbd>Del</kbd> apagar · <kbd>Ctrl</kbd>+<kbd>Z</kbd> anular · roda do rato desloca, <kbd>Ctrl</kbd>+roda faz zoom
+    </div>
+  </aside>
+
+  <main class="boardwrap">
+    <div class="board" id="board">
+      <div class="world" id="world">
+        <svg class="edges" id="edges"></svg>
+        <div id="nodes"></div>
+      </div>
+    </div>
+    <div class="palette" id="palette"></div>
+    <div class="inside hide" id="inside"></div>
+    <div class="empty hide" id="empty"><div><b>Diagrama vazio</b>Adicione caixas com a paleta à esquerda ou faça duplo clique no fundo. Depois ligue-as arrastando o ponto lateral.</div></div>
+    <div class="zoom">
+      <button id="zOut" aria-label="Diminuir zoom">−</button>
+      <span id="zVal">100%</span>
+      <button id="zIn" aria-label="Aumentar zoom">+</button>
+      <button id="zFit" title="Ajustar ao ecrã" aria-label="Ajustar ao ecrã">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      </button>
+    </div>
+    <div class="toast hide" id="toast"></div>
+  </main>
+
+  <aside class="insp" id="insp"></aside>
+</div>
+
+<div class="modal hide" id="modal"><div class="mcard" role="dialog" aria-modal="true"><button class="mclose" data-close aria-label="Fechar">×</button><div id="modalBody"></div></div></div>
+</body>
+</html>

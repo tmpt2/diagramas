@@ -1,0 +1,39 @@
+# Camadas — docker compose
+#   Arrancar:            docker compose up -d --build
+#   Com HTTPS (Caddy):   docker compose --profile https up -d --build
+#   Ver registos:        docker compose logs -f app
+
+services:
+  app:
+    build: .
+    image: camadas:latest
+    container_name: camadas
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Por omissão só aceita ligações do próprio servidor (para ficar atrás do nginx/Caddy).
+      # Para aceder diretamente pela rede, ponha BIND_ADDRESS=0.0.0.0 no .env.
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    extra_hosts:
+      # Permite usar DB_HOST=host.docker.internal quando a MariaDB corre no próprio servidor
+      - "host.docker.internal:host-gateway"
+
+  # Opcional: HTTPS automático com Let's Encrypt. Só arranca com --profile https.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

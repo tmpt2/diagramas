@@ -1,0 +1,360 @@
+{
+ "root": {
+  "id": "root",
+  "name": "Loja online (exemplo)",
+  "level": 1,
+  "parentId": null,
+  "parentNodeId": null,
+  "updatedAt": 1790341994863,
+  "nodes": [
+   {
+    "id": "r1",
+    "type": "actor",
+    "label": "Cliente",
+    "desc": "Compra produtos no site",
+    "x": 0,
+    "y": 120,
+    "w": 170,
+    "h": 84,
+    "color": null
+   },
+   {
+    "id": "r2",
+    "type": "activity",
+    "label": "Gestão de encomendas",
+    "desc": "Recebe, valida e expede encomendas",
+    "x": 300,
+    "y": 112,
+    "w": 180,
+    "h": 76,
+    "color": null,
+    "childId": "d_enc"
+   },
+   {
+    "id": "r3",
+    "type": "system",
+    "label": "Gateway de pagamento",
+    "desc": "Serviço externo de pagamentos",
+    "x": 620,
+    "y": 0,
+    "w": 190,
+    "h": 80,
+    "color": null
+   },
+   {
+    "id": "r4",
+    "type": "data",
+    "label": "Base de clientes",
+    "desc": "Dados de clientes e histórico",
+    "x": 620,
+    "y": 220,
+    "w": 170,
+    "h": 80,
+    "color": null
+   },
+   {
+    "id": "r5",
+    "type": "note",
+    "label": "Exemplo: faça duplo clique em “Gestão de encomendas” para descer de nível.",
+    "desc": "",
+    "x": 0,
+    "y": 300,
+    "w": 180,
+    "h": 96,
+    "color": null
+   }
+  ],
+  "edges": [
+   {
+    "id": "re1",
+    "from": "r1",
+    "to": "r2",
+    "label": "faz encomenda",
+    "style": "solid"
+   },
+   {
+    "id": "re2",
+    "from": "r2",
+    "to": "r3",
+    "label": "pede pagamento",
+    "style": "solid"
+   },
+   {
+    "id": "re3",
+    "from": "r2",
+    "to": "r4",
+    "label": "lê e grava",
+    "style": "dashed"
+   }
+  ]
+ },
+ "d_enc": {
+  "id": "d_enc",
+  "name": "Gestão de encomendas",
+  "level": 2,
+  "parentId": "root",
+  "parentNodeId": "r2",
+  "updatedAt": 1790341994863,
+  "nodes": [
+   {
+    "id": "e1",
+    "type": "event",
+    "label": "Encomenda recebida",
+    "desc": "",
+    "x": 0,
+    "y": 132,
+    "w": 150,
+    "h": 52,
+    "color": null
+   },
+   {
+    "id": "e2",
+    "type": "activity",
+    "label": "Validar encomenda",
+    "desc": "Dados, pagamento e stock",
+    "x": 220,
+    "y": 120,
+    "w": 180,
+    "h": 76,
+    "color": null,
+    "childId": "d_val"
+   },
+   {
+    "id": "e3",
+    "type": "decision",
+    "label": "Stock disponível?",
+    "desc": "",
+    "x": 470,
+    "y": 103,
+    "w": 150,
+    "h": 110,
+    "color": null
+   },
+   {
+    "id": "e4",
+    "type": "activity",
+    "label": "Preparar envio",
+    "desc": "",
+    "x": 700,
+    "y": 40,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "e5",
+    "type": "activity",
+    "label": "Notificar cliente",
+    "desc": "Email com previsão de entrega",
+    "x": 700,
+    "y": 220,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "e6",
+    "type": "event",
+    "label": "Encomenda concluída",
+    "desc": "",
+    "x": 960,
+    "y": 52,
+    "w": 150,
+    "h": 52,
+    "color": null
+   }
+  ],
+  "edges": [
+   {
+    "id": "ee1",
+    "from": "e1",
+    "to": "e2",
+    "label": "",
+    "style": "solid"
+   },
+   {
+    "id": "ee2",
+    "from": "e2",
+    "to": "e3",
+    "label": "",
+    "style": "solid"
+   },
+   {
+    "id": "ee3",
+    "from": "e3",
+    "to": "e4",
+    "label": "sim",
+    "style": "solid"
+   },
+   {
+    "id": "ee4",
+    "from": "e3",
+    "to": "e5",
+    "label": "não",
+    "style": "dashed"
+   },
+   {
+    "id": "ee5",
+    "from": "e4",
+    "to": "e6",
+    "label": "",
+    "style": "solid"
+   }
+  ]
+ },
+ "d_val": {
+  "id": "d_val",
+  "name": "Validar encomenda",
+  "level": 3,
+  "parentId": "d_enc",
+  "parentNodeId": "e2",
+  "updatedAt": 1790341994863,
+  "nodes": [
+   {
+    "id": "v1",
+    "type": "activity",
+    "label": "Verificar dados do cliente",
+    "desc": "",
+    "x": 0,
+    "y": 40,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "v2",
+    "type": "activity",
+    "label": "Confirmar pagamento",
+    "desc": "",
+    "x": 260,
+    "y": 40,
+    "w": 180,
+    "h": 76,
+    "color": null,
+    "childId": "d_pag"
+   },
+   {
+    "id": "v3",
+    "type": "activity",
+    "label": "Reservar stock",
+    "desc": "",
+    "x": 520,
+    "y": 40,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "v4",
+    "type": "event",
+    "label": "Encomenda válida",
+    "desc": "",
+    "x": 780,
+    "y": 52,
+    "w": 150,
+    "h": 52,
+    "color": null
+   }
+  ],
+  "edges": [
+   {
+    "id": "ve1",
+    "from": "v1",
+    "to": "v2",
+    "label": "",
+    "style": "solid"
+   },
+   {
+    "id": "ve2",
+    "from": "v2",
+    "to": "v3",
+    "label": "",
+    "style": "solid"
+   },
+   {
+    "id": "ve3",
+    "from": "v3",
+    "to": "v4",
+    "label": "",
+    "style": "solid"
+   }
+  ]
+ },
+ "d_pag": {
+  "id": "d_pag",
+  "name": "Confirmar pagamento",
+  "level": 4,
+  "parentId": "d_val",
+  "parentNodeId": "v2",
+  "updatedAt": 1790341994863,
+  "nodes": [
+   {
+    "id": "p1",
+    "type": "activity",
+    "label": "Pedir autorização ao banco",
+    "desc": "",
+    "x": 0,
+    "y": 120,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "p2",
+    "type": "decision",
+    "label": "Autorizado?",
+    "desc": "",
+    "x": 260,
+    "y": 103,
+    "w": 150,
+    "h": 110,
+    "color": null
+   },
+   {
+    "id": "p3",
+    "type": "activity",
+    "label": "Registar pagamento",
+    "desc": "",
+    "x": 500,
+    "y": 40,
+    "w": 180,
+    "h": 76,
+    "color": null
+   },
+   {
+    "id": "p4",
+    "type": "activity",
+    "label": "Cancelar e avisar cliente",
+    "desc": "",
+    "x": 500,
+    "y": 220,
+    "w": 180,
+    "h": 76,
+    "color": null
+   }
+  ],
+  "edges": [
+   {
+    "id": "pe1",
+    "from": "p1",
+    "to": "p2",
+    "label": "",
+    "style": "solid"
+   },
+   {
+    "id": "pe2",
+    "from": "p2",
+    "to": "p3",
+    "label": "sim",
+    "style": "solid"
+   },
+   {
+    "id": "pe3",
+    "from": "p2",
+    "to": "p4",
+    "label": "não",
+    "style": "dashed"
+   }
+  ]
+ }
+}
