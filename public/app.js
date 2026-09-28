@@ -42,22 +42,27 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",
 const lvColor = l => `var(--l${Math.min(Math.max(l,1),4)})`;
 
 /* ---------- state ---------- */
-let diagrams = {};          // id -> diagram
+let diagrams = {};          // sheet id -> sheet of the open diagram (root + one per detailed box)
 let currentId = "root";
 let sel = null;             // {kind:'node'|'edge', id}
 const views = {};           // id -> {x,y,k}
 const undo = [];            // [{id, json}]
 let me = null;              // signed-in user
 let appCfg = {appName:"Camadas", allowRegistration:false};
+let mode = "home";          // "home" (library) | "doc" (editor)
+let docMeta = null;         // open diagram: {id, name, role, folderId, ownerId}
+let docRev = 0;             // last diagram revision seen from the server
+let bases = {};             // sheet id -> {rev, json}: last version known to be on the server
+let others = [];            // other people with this diagram open
 
 function newRoot(){ return {id:"root", name:"Mapa principal", level:1, parentId:null, parentNodeId:null, nodes:[], edges:[], updatedAt:Date.now()}; }
 function cur(){ return diagrams[currentId] || diagrams.root; }
 function view(){ return views[currentId] || (views[currentId] = {x:0,y:0,k:1,fresh:true}); }
 diagrams.root = newRoot();
-const curKey = () => LS_KEY + ".cur." + (me ? me.id : "");
+const curKey = () => LS_KEY + ".cur." + (docMeta ? docMeta.id : "");
 
 /* ---------- server API ---------- */
-class ApiError extends Error { constructor(status, msg){ super(msg); this.status = status; } }
+class ApiError extends Error { constructor(status, msg, data){ super(msg); this.status = status; this.data = data || {}; } }
 async function api(method, url, body){
   let res;
   try{
@@ -68,80 +73,187 @@ async function api(method, url, body){
   let data = {};
   try{ data = await res.json(); }catch(e){}
   if(res.status === 401 && !url.startsWith("api/auth/")){ sessionExpired(); }
-  if(!res.ok) throw new ApiError(res.status, data.error || "Erro " + res.status);
+  if(!res.ok) throw new ApiError(res.status, data.error || "Erro " + res.status, data);
   return data;
+}
+const docUrl = (sid) => `api/docs/${docMeta.id}` + (sid ? "/sheets/" + encodeURIComponent(sid) : "");
+
+/* ---------- merging concurrent edits ----------
+ * Each sheet remembers the last version the server had (its "base"). When someone else saved
+ * the same sheet in the meantime, local changes are replayed on top of theirs, box by box and
+ * field by field: what you changed wins, what you did not touch takes their version. */
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function mergeObj(b, l, r){
+  const o = {...r};
+  for(const k in l) if(!eq(l[k], b ? b[k] : undefined)) o[k] = l[k];
+  if(b) for(const k in b) if(!(k in l) && eq(r[k], b[k])) delete o[k];
+  return o;
+}
+function mergeList(b = [], l = [], r = []){
+  const B = new Map(b.map(x => [x.id, x])), L = new Map(l.map(x => [x.id, x])), R = new Set(r.map(x => x.id)), out = [];
+  for(const x of r){
+    const bi = B.get(x.id), li = L.get(x.id);
+    if(!li){ if(bi && eq(bi, x)) continue; out.push(x); }   // deleted here (kept if they changed it)
+    else out.push(bi ? mergeObj(bi, li, x) : li);
+  }
+  for(const li of l){ if(R.has(li.id)) continue; const bi = B.get(li.id); if(!bi || !eq(li, bi)) out.push(li); } // added here
+  return out;
+}
+function merge3(b, l, r){
+  b = b || {};
+  const o = {...r};
+  for(const k of Object.keys(l)) if(k!=="nodes" && k!=="edges" && k!=="updatedAt" && !eq(l[k], b[k])) o[k] = l[k];
+  o.nodes = mergeList(b.nodes, l.nodes, r.nodes);
+  const ids = new Set(o.nodes.map(n => n.id));
+  o.edges = mergeList(b.edges, l.edges, r.edges).filter(e => ids.has(e.from) && ids.has(e.to));
+  o.updatedAt = Date.now();
+  return o;
 }
 
 /* ---------- persistence ---------- */
 const pending = new Set(), inflight = new Set(), deleted = new Set();
 let flushTimer = null, saveError = null;
 function touch(id){
-  const d = diagrams[id]; if(!d) return;
+  const d = diagrams[id]; if(!d || isReadOnly) return;
   d.updatedAt = Date.now();
   pending.add(id);
   clearTimeout(flushTimer); flushTimer = setTimeout(flush, 500);
   setStatus();
 }
 async function flush(){
-  if(!me) return;
+  if(!me || !docMeta) return;
+  const doc = docMeta;
   const ids = [...pending].filter(id => !inflight.has(id));
   await Promise.all(ids.map(async id => {
     pending.delete(id); inflight.add(id); setStatus();
     try{
-      if(deleted.has(id)){ await api("DELETE", "api/diagrams/"+encodeURIComponent(id)); deleted.delete(id); }
-      else if(diagrams[id]) await api("PUT", "api/diagrams/"+encodeURIComponent(id), diagrams[id]);
+      if(deleted.has(id)){ await api("DELETE", docUrl(id)); deleted.delete(id); delete bases[id]; }
+      else if(diagrams[id]){
+        const json = JSON.stringify(diagrams[id]);
+        const r = await api("PUT", docUrl(id), {data:diagrams[id], baseRev: bases[id] ? bases[id].rev : 0});
+        if(docMeta === doc) bases[id] = {rev:r.rev, json};
+      }
       saveError = null;
     }catch(e){
-      if(e.status === 400){ saveError = e.message; }   // invalid data: retrying won't help
-      else if(e.status !== 401){ pending.add(id); saveError = e.message; }
-      else pending.add(id);
+      if(docMeta !== doc){}                                   // diagram was closed meanwhile
+      else if(e.status === 409) conflict(id, e.data);
+      else if(e.status === 404) lostAccess(e.message);
+      else if(e.status === 403){ pending.clear(); deleted.clear(); sync(); saveError = e.message; } // now view-only
+      else if(e.status === 400){ saveError = e.message; }     // invalid data: retrying won't help
+      else { pending.add(id); if(e.status !== 401) saveError = e.message; }
     }
     inflight.delete(id);
   }));
-  if(pending.size){ clearTimeout(flushTimer); flushTimer = setTimeout(flush, 3000); }
+  if(pending.size){ clearTimeout(flushTimer); flushTimer = setTimeout(flush, saveError ? 3000 : 150); }
   setStatus();
+}
+// Someone else saved this sheet first: merge our changes into theirs and save again.
+function conflict(id, d){
+  if(d.data == null){
+    delete diagrams[id]; delete bases[id]; pending.delete(id);
+    if(currentId === id) currentId = "root";
+    showToast("Este nível foi apagado por outra pessoa.", [{t:"OK"}]);
+  } else {
+    const remote = JSON.parse(d.data), base = bases[id] ? JSON.parse(bases[id].json) : null;
+    diagrams[id] = diagrams[id] ? merge3(base, diagrams[id], remote) : remote;
+    bases[id] = {rev:d.rev, json:d.data};
+    pending.add(id);
+  }
+  dropUndo(id);
+  if(sel && !findSel()) sel = null;
+  render();
 }
 let isReadOnly = false;
 function setStatus(){
   const st = $("status"), busy = pending.size || inflight.size;
-  st.className = "status" + (saveError ? " err" : busy ? " busy" : "");
-  st.querySelector("span").textContent = saveError ? "Não guardado — a tentar de novo" : busy ? "A guardar…" : "Guardado";
-  st.title = saveError || "";
+  st.className = "status doc-only" + (saveError ? " err" : busy ? " busy" : isReadOnly ? " local" : "");
+  st.querySelector("span").textContent = saveError ? "Não guardado — a tentar de novo" : busy ? "A guardar…" : isReadOnly ? "Só leitura" : "Guardado";
+  st.title = saveError || (isReadOnly ? "Tem permissão para ver este diagrama, mas não para o alterar." : "");
 }
 addEventListener("beforeunload", e => { if(pending.size || inflight.size){ flush(); e.preventDefault(); e.returnValue = ""; } });
 
-async function loadAll(){
-  const r = await api("GET", "api/diagrams");
-  const map = {};
-  r.diagrams.forEach(d => { if(d && d.id) map[d.id] = d; });
-  return map;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function saveAll(){
+  for(let i = 0; i < 40 && (pending.size || inflight.size); i++){ if(pending.size) await flush(); else await sleep(100); }
+  return !pending.size && !inflight.size;
 }
-async function openWorkspace(){
-  diagrams = await loadAll();
-  if(!diagrams.root){ diagrams.root = newRoot(); touch("root"); }
+
+async function openDoc(id){
+  if(docMeta && docMeta.id === id){ showDoc(); return; }
+  if(docMeta && !(await closeDoc())) return;
+  let r;
+  try{ r = await api("GET", "api/docs/" + id); }
+  catch(e){ if(e.status !== 401){ location.hash = ""; showToast(e.message, [{t:"OK"}]); } return; }
+  diagrams = {}; bases = {};
+  r.sheets.forEach(s => { try{ const d = JSON.parse(s.data); diagrams[s.id] = d; bases[s.id] = {rev:s.rev, json:s.data}; }catch(e){} });
+  docMeta = r.doc; docRev = r.doc.rev; others = r.presence || [];
+  isReadOnly = docMeta.role === "view";
+  if(!diagrams.root){ diagrams.root = {...newRoot(), name:docMeta.name}; touch("root"); }
   undo.length = 0; sel = null; for(const k in views) delete views[k];
+  pending.clear(); deleted.clear(); saveError = null;
   currentId = "root";
   try{ const c = localStorage.getItem(curKey()); if(c && diagrams[c]) currentId = c; }catch(e){}
-  showApp(); setStatus(); render();
+  showDoc();
 }
-// Pick up changes made on another device or tab when this window regains focus.
-let refreshing = false;
-async function refresh(){
-  if(!me || refreshing || pending.size || inflight.size || drag) return;
-  refreshing = true;
+async function closeDoc(){
+  if(!docMeta) return true;
+  if(!(await saveAll())){
+    showToast("Há alterações por guardar. Verifique a ligação e tente de novo.", [{t:"OK"}]);
+    return false;
+  }
+  docMeta = null; diagrams = {root:newRoot()}; bases = {}; others = []; undo.length = 0; sel = null;
+  pending.clear(); deleted.clear(); isReadOnly = false;
+  return true;
+}
+function lostAccess(msg){
+  docMeta = null; diagrams = {root:newRoot()}; bases = {}; pending.clear(); deleted.clear();
+  location.hash = "";
+  showToast(msg || "Deixou de ter acesso a este diagrama.", [{t:"OK"}]);
+}
+
+/* ---------- live updates: poll for changes made by other people ---------- */
+let syncing = false;
+async function sync(){
+  if(!me || !docMeta || syncing || drag || document.hidden) return;
+  syncing = true;
+  const doc = docMeta;
   try{
-    const incoming = await loadAll();
-    if(pending.size || inflight.size || drag) return;
-    if(JSON.stringify(incoming) === JSON.stringify(diagrams)) return;
-    diagrams = incoming;
-    if(!diagrams.root) diagrams.root = newRoot();
-    if(!diagrams[currentId]) currentId = "root";
-    if(sel && !findSel()) sel = null;
-    render();
-  }catch(e){} finally{ refreshing = false; }
+    const r = await api("GET", `api/docs/${doc.id}/sync?since=${docRev}`);
+    if(docMeta !== doc || drag) return;
+    let changed = false, skipped = Infinity;
+    for(const s of r.sheets){
+      const b = bases[s.id];
+      if(b && s.rev <= b.rev) continue;                        // our own save coming back
+      if(inflight.has(s.id)){ skipped = Math.min(skipped, s.rev); continue; } // our save will get a 409 and merge
+      changed = true; dropUndo(s.id);
+      if(s.deleted){ delete diagrams[s.id]; delete bases[s.id]; pending.delete(s.id); deleted.delete(s.id); continue; }
+      if(deleted.has(s.id)) continue;
+      const remote = JSON.parse(s.data);
+      diagrams[s.id] = pending.has(s.id) && diagrams[s.id] ? merge3(b ? JSON.parse(b.json) : null, diagrams[s.id], remote) : remote;
+      bases[s.id] = {rev:s.rev, json:s.data};
+    }
+    docRev = skipped < Infinity ? Math.max(docRev, skipped - 1) : r.rev;
+    if(r.role !== doc.role){
+      doc.role = r.role; isReadOnly = r.role === "view"; changed = true;
+      app.classList.toggle("ro", isReadOnly);
+      if(isReadOnly){ pending.clear(); deleted.clear(); saveError = null; }
+      showToast(isReadOnly ? "Agora só pode ver este diagrama." : "Agora pode editar este diagrama.", [{t:"OK"}]);
+    }
+    doc.name = r.name;
+    if(!eq(others, r.presence)){ others = r.presence; renderPresence(); }
+    if(changed){
+      if(!diagrams.root) diagrams.root = {...newRoot(), name:doc.name};
+      if(!diagrams[currentId]){ currentId = "root"; showToast("O nível que estava a ver foi apagado por outra pessoa.", [{t:"OK"}]); }
+      if(sel && !findSel()) sel = null;
+      render(); setStatus();
+    }
+  }catch(e){
+    if(docMeta === doc && (e.status === 403 || e.status === 404)) lostAccess(e.message);
+  }finally{ syncing = false; }
 }
-addEventListener("focus", refresh);
-document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
+setInterval(sync, 4000);
+addEventListener("focus", sync);
+document.addEventListener("visibilitychange", () => { if(!document.hidden){ sync(); if(mode === "home" && me) loadLibrary(); } });
 
 /* ---------- undo ---------- */
 function snapshot(){
@@ -149,7 +261,16 @@ function snapshot(){
   if(undo.length > 80) undo.shift();
   $("undoBtn").disabled = false;
 }
+// After someone else changed a sheet, undoing an older local snapshot would wipe their work.
+function dropUndo(id){
+  for(let i = undo.length - 1; i >= 0; i--){
+    const u = undo[i];
+    if(u.id === id || (u.id.startsWith("__multi:") && JSON.parse(u.json).some(d => d.id === id))) undo.splice(i, 1);
+  }
+  $("undoBtn").disabled = !undo.length;
+}
 function doUndo(){
+  if(isReadOnly) return;
   const u = undo.pop(); if(!u) return;
   if(u.id.startsWith("__multi:")){ // restore several diagrams
     const arr = JSON.parse(u.json);
@@ -346,30 +467,31 @@ function renderInside(){
 function renderInspector(){
   const d = cur(), el = $("insp"), s = findSel();
   const focused = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
+  const dis = isReadOnly ? " disabled" : "";
   if(s && sel.kind==="node"){
-    const n = s, ch = childOf(n), canDeep = d.level < MAX_LEVEL;
+    const n = s, ch = childOf(n), canDeep = d.level < MAX_LEVEL && (!isReadOnly || (ch && ch.nodes.length));
     el.innerHTML = `<h2>${TYPES[n.type].name} · nível ${d.level}</h2>
-      <div class="field"><label for="f-label">Nome</label><input id="f-label" value="${esc(n.label)}" maxlength="120"></div>
-      <div class="field"><label for="f-desc">Descrição</label><textarea id="f-desc" placeholder="Responsável, entradas, saídas, regras…">${esc(n.desc)}</textarea></div>
-      <div class="field"><label>Tipo</label><div class="seg" id="f-type">${Object.entries(TYPES).map(([k,t])=>`<button data-type="${k}" class="${k===n.type?"on":""}">${t.name}</button>`).join("")}</div></div>
-      <div class="field"><label>Cor</label><div class="swatches" id="f-color">${COLORS.map(c=>`<button class="sw${(n.color||null)===c?" on":""}" data-color="${c||""}" aria-label="${c?"Cor "+c:"Cor do nível"}" data-s="background:${c==="ink"?"var(--ink)":c?`var(--${c})`:`linear-gradient(135deg,${lvColor(d.level)} 50%,var(--surface) 50%)`}"></button>`).join("")}</div></div>
+      <div class="field"><label for="f-label">Nome</label><input id="f-label" value="${esc(n.label)}" maxlength="120"${dis}></div>
+      <div class="field"><label for="f-desc">Descrição</label><textarea id="f-desc" placeholder="Responsável, entradas, saídas, regras…"${dis}>${esc(n.desc)}</textarea></div>
+      <div class="field"><label>Tipo</label><div class="seg" id="f-type">${Object.entries(TYPES).map(([k,t])=>`<button data-type="${k}" class="${k===n.type?"on":""}"${dis}>${t.name}</button>`).join("")}</div></div>
+      <div class="field"><label>Cor</label><div class="swatches" id="f-color">${COLORS.map(c=>`<button class="sw${(n.color||null)===c?" on":""}"${dis} data-color="${c||""}" aria-label="${c?"Cor "+c:"Cor do nível"}" data-s="background:${c==="ink"?"var(--ink)":c?`var(--${c})`:`linear-gradient(135deg,${lvColor(d.level)} 50%,var(--surface) 50%)`}"></button>`).join("")}</div></div>
       ${canDeep ? `<div class="drill"><div class="row"><span class="lv" data-s="--lc:${lvColor(d.level+1)}">N${d.level+1}</span>${LEVELS[d.level].name}</div>
         <p>${ch && ch.nodes.length ? `Este elemento tem ${ch.nodes.length} caixas e ${ch.edges.length} ligações no nível ${d.level+1}.` : `Ainda sem detalhe. Entre para desenhar o fluxo interno deste elemento.`}</p>
         <button class="pbig" id="f-enter">${ch && ch.nodes.length ? "Abrir nível "+(d.level+1) : "Detalhar no nível "+(d.level+1)} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>`
-      : `<div class="drill"><p>Nível ${MAX_LEVEL} é o mais detalhado. Use a descrição para registar os passos.</p></div>`}
-      <button class="dbtn" id="f-del">Apagar caixa</button>`;
+      : d.level >= MAX_LEVEL ? `<div class="drill"><p>Nível ${MAX_LEVEL} é o mais detalhado. Use a descrição para registar os passos.</p></div>` : ""}
+      ${isReadOnly ? "" : `<button class="dbtn" id="f-del">Apagar caixa</button>`}`;
   } else if(s && sel.kind==="edge"){
     const e = s, A = nodeById(e.from), B = nodeById(e.to);
     el.innerHTML = `<h2>Ligação</h2>
       <div class="meta">${esc(A&&A.label)} → ${esc(B&&B.label)}</div>
-      <div class="field"><label for="f-elabel">Texto da ligação</label><input id="f-elabel" value="${esc(e.label)}" placeholder="ex.: envia pedido, sim, não" maxlength="80"></div>
-      <div class="field"><label>Traço</label><div class="seg" id="f-style"><button data-style="solid" class="${e.style!=="dashed"?"on":""}">Contínuo</button><button data-style="dashed" class="${e.style==="dashed"?"on":""}">Tracejado</button></div></div>
-      <div class="field"><label>Sentido</label><div class="seg"><button id="f-flip">Inverter sentido</button></div></div>
-      <button class="dbtn" id="f-del">Apagar ligação</button>`;
+      <div class="field"><label for="f-elabel">Texto da ligação</label><input id="f-elabel" value="${esc(e.label)}" placeholder="ex.: envia pedido, sim, não" maxlength="80"${dis}></div>
+      <div class="field"><label>Traço</label><div class="seg" id="f-style"><button data-style="solid" class="${e.style!=="dashed"?"on":""}"${dis}>Contínuo</button><button data-style="dashed" class="${e.style==="dashed"?"on":""}"${dis}>Tracejado</button></div></div>
+      <div class="field"><label>Sentido</label><div class="seg"><button id="f-flip"${dis}>Inverter sentido</button></div></div>
+      ${isReadOnly ? "" : `<button class="dbtn" id="f-del">Apagar ligação</button>`}`;
   } else {
     const deep = countDeep(d) - d.nodes.length;
     el.innerHTML = `<h2>Diagrama · nível ${d.level}</h2>
-      <div class="field"><label for="f-dname">Nome</label><input id="f-dname" value="${esc(diagName(d))}" maxlength="120"></div>
+      <div class="field"><label for="f-dname">Nome</label><input id="f-dname" value="${esc(diagName(d))}" maxlength="120"${dis}></div>
       <div class="meta">${LEVELS[d.level-1].name} — ${LEVELS[d.level-1].tip}</div>
       <div class="stats"><div><b>${d.nodes.length}</b><span>caixas</span></div><div><b>${d.edges.length}</b><span>ligações</span></div>
         <div><b>${d.nodes.filter(n=>childOf(n)&&childOf(n).nodes.length).length}</b><span>com detalhe</span></div><div><b>${deep}</b><span>caixas abaixo</span></div></div>
@@ -392,7 +514,7 @@ $("insp").addEventListener("input", e => {
   else if(t.id==="f-desc"){ findSel().desc=t.value; }
   else if(t.id==="f-elabel"){ findSel().label=t.value; }
   else if(t.id==="f-dname"){
-    if(!d.parentId) d.name=t.value;
+    if(!d.parentId){ d.name=t.value; document.title = `${t.value} · ${appCfg.appName || "Camadas"}`; }
     else { const p=diagrams[d.parentId], n=nodeById(d.parentNodeId,p); if(n){ n.label=t.value; touch(p.id);} d.name=t.value; }
   } else return;
   touch(d.id);
@@ -558,7 +680,8 @@ $("undoBtn").onclick = doUndo;
 /* ---------- keyboard ---------- */
 document.addEventListener("keydown", e => {
   if(!$("modal").classList.contains("hide")){ if(e.key==="Escape") closeModal(); return; }
-  if(!me || app.classList.contains("hide")) return;
+  if(e.key === "Escape") closePop();
+  if(!me || app.classList.contains("hide") || mode !== "doc") return;
   const typing = e.target.matches("input,textarea,select");
   if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z" && !typing){ e.preventDefault(); doUndo(); return; }
   if(typing){ if(e.key==="Escape") e.target.blur(); return; }
@@ -584,27 +707,361 @@ function saveFile(name, text){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-function doExport(){
-  const data = JSON.stringify({app:"camadas", version:1, exportedAt:new Date().toISOString(), diagrams}, null, 2);
-  saveFile(`camadas-${new Date().toISOString().slice(0,10)}.json`, data);
+const fileSlug = s => String(s || "diagrama").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 60) || "diagrama";
+function exportSheets(name, sheets){
+  const data = JSON.stringify({app:"camadas", version:1, name, exportedAt:new Date().toISOString(), diagrams:sheets}, null, 2);
+  saveFile(`${fileSlug(name)}-${new Date().toISOString().slice(0,10)}.json`, data);
+}
+function doExport(){ if(docMeta) exportSheets(diagName(diagrams.root), diagrams); }
+async function exportDoc(id){
+  try{
+    const r = await api("GET", "api/docs/" + id), sheets = {};
+    r.sheets.forEach(s => { sheets[s.id] = JSON.parse(s.data); });
+    exportSheets(r.doc.name, sheets);
+  }catch(e){ showToast(e.message, [{t:"OK"}]); }
 }
 $("exportBtn").onclick = doExport;
+// Importing always creates a new diagram (in the project being viewed, when possible).
 $("importFile").addEventListener("change", async e => {
   const f = e.target.files[0]; e.target.value = ""; if(!f) return;
   closeMenu();
   let o;
   try{ o = JSON.parse(await f.text()); if(!o.diagrams || !o.diagrams.root) throw 0; }
   catch(_){ showToast("Esse ficheiro não é uma exportação válida do Camadas.", [{t:"OK"}]); return; }
-  showToast(`Substituir todos os seus diagramas por “${f.name}”?`, [{t:"Substituir", cls:"danger", fn: async ()=>{
-    try{
-      await flush();
-      await api("POST", "api/diagrams/import", {diagrams:o.diagrams});
-      pending.clear(); deleted.clear();
-      await openWorkspace();
-      showToast("Diagramas importados.", [{t:"OK"}]);
-    }catch(err){ showToast("Não foi possível importar: " + err.message, [{t:"OK"}]); }
-  }}, {t:"Cancelar"}]);
+  try{
+    const folder = mode === "home" ? currentFolder() : null;
+    const r = await api("POST", "api/docs", {name:o.name || o.diagrams.root.name, sheets:o.diagrams,
+      folderId: folder && folder.role !== "view" ? folder.id : null});
+    location.hash = "#/d/" + r.id;
+    showToast(`“${f.name}” importado como um diagrama novo.`, [{t:"OK"}]);
+  }catch(err){ showToast("Não foi possível importar: " + err.message, [{t:"OK"}]); }
 });
+
+/* ---------- library: projects and diagrams ---------- */
+let lib = {folders:[], docs:[]};
+let homeView = "recent";     // recent | none | shared | p<ID>
+const ROLE_TXT = {owner:"Dono", edit:"Pode editar", view:"Só pode ver"};
+const who = u => u ? (u.name || u.email) : "";
+function currentFolder(){ return homeView[0] === "p" ? lib.folders.find(f => "p" + f.id === homeView) || null : null; }
+function ago(t){
+  const s = (Date.now() - t) / 1000;
+  if(s < 60) return "agora mesmo";
+  if(s < 3600) return `há ${Math.round(s/60)} min`;
+  if(s < 86400) return `há ${Math.round(s/3600)} h`;
+  if(s < 86400*7) return `há ${Math.round(s/86400)} dias`;
+  return new Date(t).toLocaleDateString("pt-PT", {day:"2-digit", month:"short", year:"numeric"});
+}
+async function loadLibrary(){
+  try{ lib = await api("GET", "api/library"); }
+  catch(e){ if(e.status !== 401) showToast(e.message, [{t:"OK"}]); return; }
+  if(homeView[0] === "p" && !currentFolder()) homeView = "recent";
+  renderHome();
+}
+function sharedDocs(){ return lib.docs.filter(d => d.role !== "owner" && !lib.folders.some(f => f.id === d.folderId)); }
+function viewDocs(){
+  if(homeView === "recent") return lib.docs;
+  if(homeView === "none") return lib.docs.filter(d => d.role === "owner" && !d.folderId);
+  if(homeView === "shared") return sharedDocs();
+  const f = currentFolder(); return f ? lib.docs.filter(d => d.folderId === f.id) : [];
+}
+const ICON = {
+  folder:'<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.2h9A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5Z"/>',
+  clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  inbox:'<path d="M3 13.5 5.5 5h13l2.5 8.5V19H3Z"/><path d="M3 13.5h5l1.5 2.5h5l1.5-2.5h5"/>',
+  share:'<circle cx="17.5" cy="6" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="18" r="2.5"/><path d="m8.7 10.8 6.6-3.6M8.7 13.2l6.6 3.6"/>',
+  users:'<circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M15.5 5.2a3.2 3.2 0 0 1 0 6M17.5 13.8c2 .7 3.5 2.6 3.5 5.2"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  dots:'<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+};
+const ico = (k, sz = 16) => `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
+function navItem(v, icon, label, count, extra = ""){
+  return `<button class="hitem${homeView===v?" on":""}" data-view="${v}">${ico(icon)}<span class="nm">${esc(label)}</span>${extra}<span class="ct">${count}</span></button>`;
+}
+function renderHome(){
+  const mine = lib.folders.filter(f => f.role === "owner"), theirs = lib.folders.filter(f => f.role !== "owner");
+  const cnt = f => lib.docs.filter(d => d.folderId === f.id).length;
+  $("hnav").innerHTML =
+    navItem("recent", "clock", "Recentes", lib.docs.length) +
+    navItem("none", "inbox", "Sem projeto", lib.docs.filter(d => d.role === "owner" && !d.folderId).length) +
+    `<div class="hsec">Projetos</div>` +
+    mine.map(f => navItem("p"+f.id, "folder", f.name, cnt(f), f.shares ? `<span class="shr" title="Partilhado com ${f.shares} ${f.shares>1?"pessoas":"pessoa"}">${ico("users",13)}</span>` : "")).join("") +
+    `<button class="hitem add" id="hNewFolder">${ico("plus")}<span class="nm">Novo projeto</span></button>` +
+    (theirs.length || sharedDocs().length ? `<div class="hsec">Partilhados comigo</div>` +
+      (sharedDocs().length ? navItem("shared", "share", "Diagramas", sharedDocs().length) : "") +
+      theirs.map(f => navItem("p"+f.id, "folder", f.name, cnt(f), `<span class="from">${esc(who(f.owner))}</span>`)).join("") : "");
+
+  const f = currentFolder();
+  if(homeView[0] === "p" && !f){ $("hmain").innerHTML = `<p class="muted">A carregar…</p>`; return; }
+  const title = homeView === "recent" ? "Recentes" : homeView === "none" ? "Sem projeto" : homeView === "shared" ? "Partilhados comigo" : f.name;
+  const sub = homeView === "recent" ? "Todos os diagramas a que tem acesso, do mais recente para o mais antigo."
+    : homeView === "none" ? "Os seus diagramas que não estão em nenhum projeto."
+    : homeView === "shared" ? "Diagramas que outras pessoas partilharam consigo."
+    : f.role === "owner" ? (f.shares ? `Projeto partilhado com ${f.shares} ${f.shares>1?"pessoas":"pessoa"}.` : "Projeto só seu.")
+    : `Projeto de ${esc(who(f.owner))} · ${ROLE_TXT[f.role].toLowerCase()}`;
+  const canCreate = homeView !== "shared" && (!f || f.role !== "view");
+  const docs = viewDocs();
+  $("hmain").innerHTML = `
+    <div class="hhead">
+      <div class="htitle"><h1>${esc(title)}</h1><p>${sub}</p></div>
+      <div class="hacts">
+        ${f ? `<button class="tbtn" id="hShareFolder">${ico("users")}${f.role === "owner" ? "Partilhar" : "Pessoas"}</button>` : ""}
+        ${f ? `<button class="tbtn icon-only" id="hFolderMenu" title="Mais opções" aria-label="Mais opções do projeto">${ico("dots")}</button>` : ""}
+        ${canCreate ? `<button class="tbtn primary" id="hNewDoc">${ico("plus")}Novo diagrama</button>` : ""}
+      </div>
+    </div>
+    ${docs.length ? `<div class="cards">${docs.map(card).join("")}</div>`
+      : `<div class="hempty"><b>${homeView === "shared" ? "Ainda ninguém partilhou diagramas consigo" : "Nenhum diagrama aqui"}</b>
+          ${canCreate ? `Crie um diagrama novo ou importe um ficheiro exportado.<div class="row"><button class="tbtn primary" data-act="new">${ico("plus")}Novo diagrama</button><label class="tbtn" for="importFile" tabindex="0">Importar ficheiro</label></div>` : ""}</div>`}`;
+}
+function card(d){
+  const folder = lib.folders.find(f => f.id === d.folderId);
+  const tags = [];
+  if(d.role !== "owner") tags.push(`<span class="tag">de ${esc(who(d.owner))}</span>`, d.role === "view" ? `<span class="tag">só ver</span>` : "");
+  else if(d.shares) tags.push(`<span class="tag shared">${ico("users",11)} ${d.shares}</span>`);
+  if(folder && homeView === "recent") tags.push(`<span class="tag">${ico("folder",11)} ${esc(folder.name)}</span>`);
+  const by = d.updatedBy && d.updatedBy.id !== me.id ? ` por ${esc(who(d.updatedBy))}` : "";
+  return `<div class="card" data-doc="${d.id}">
+    <a class="copen" href="#/d/${d.id}" aria-label="Abrir ${esc(d.name)}"></a>
+    <div class="cthumb"><span></span><span></span><span></span></div>
+    <div class="cbody">
+      <b class="cname">${esc(d.name)}</b>
+      <span class="cmeta">${d.sheets} ${d.sheets === 1 ? "nível" : "níveis"} · editado ${ago(d.updatedAt)}${by}</span>
+      ${tags.length ? `<span class="ctags">${tags.join("")}</span>` : ""}
+    </div>
+    <button class="cmenu" data-docmenu="${d.id}" title="Opções" aria-label="Opções de ${esc(d.name)}">${ico("dots")}</button>
+  </div>`;
+}
+async function newDoc(){
+  const f = currentFolder();
+  try{
+    const r = await api("POST", "api/docs", {name:"Novo diagrama", folderId: f && f.role !== "view" ? f.id : null});
+    location.hash = "#/d/" + r.id;
+  }catch(e){ showToast(e.message, [{t:"OK"}]); }
+}
+$("home").addEventListener("click", async e => {
+  const t = e.target;
+  const v = t.closest("[data-view]"); if(v){ location.hash = v.dataset.view === "recent" ? "#/" : "#/" + (v.dataset.view[0] === "p" ? "p/" + v.dataset.view.slice(1) : v.dataset.view); return; }
+  if(t.closest("#hNewDoc") || t.closest('[data-act="new"]')) return newDoc();
+  if(t.closest("#hNewFolder")){
+    const name = await askText("Novo projeto", "Nome do projeto", "", "Criar");
+    if(name == null) return;
+    try{ const r = await api("POST", "api/folders", {name}); await loadLibrary(); location.hash = "#/p/" + r.id; }
+    catch(err){ showToast(err.message, [{t:"OK"}]); }
+    return;
+  }
+  const f = currentFolder();
+  if(t.closest("#hShareFolder") && f) return openShare("folder", f.id, f.name);
+  const fm = t.closest("#hFolderMenu");
+  if(fm && f){
+    popMenu(fm, f.role === "owner" ? [
+      {t:"Mudar o nome", fn: async () => { const n = await askText("Mudar o nome do projeto", "Nome", f.name, "Guardar"); if(n != null) act(() => api("PATCH", "api/folders/"+f.id, {name:n})); }},
+      {t:"Partilhar", fn: () => openShare("folder", f.id, f.name)},
+      {t:"Apagar projeto", cls:"danger", fn: async () => {
+        if(await askConfirm("Apagar projeto", `Apagar o projeto “${f.name}”? Os diagramas não são apagados: passam para “Sem projeto”. Quem tinha acesso pelo projeto deixa de o ter.`, "Apagar projeto"))
+          act(() => api("DELETE", "api/folders/"+f.id), "#/");
+      }},
+    ] : [
+      {t:"Ver quem tem acesso", fn: () => openShare("folder", f.id, f.name)},
+      {t:"Sair deste projeto", cls:"danger", fn: async () => {
+        if(await askConfirm("Sair do projeto", `Deixar de ter acesso ao projeto “${f.name}” de ${who(f.owner)}?`, "Sair"))
+          act(() => api("DELETE", `api/shares/folder/${f.id}/${me.id}`), "#/");
+      }},
+    ]);
+    return;
+  }
+  const dm = t.closest("[data-docmenu]");
+  if(dm){ e.preventDefault(); docMenu(dm, lib.docs.find(d => d.id === +dm.dataset.docmenu)); }
+});
+async function act(fn, hash){
+  try{ await fn(); if(hash != null && location.hash !== hash) location.hash = hash; await loadLibrary(); }
+  catch(e){ showToast(e.message, [{t:"OK"}]); }
+}
+function docMenu(anchor, d){
+  if(!d) return;
+  const direct = d.role !== "owner" && !lib.folders.some(f => f.id === d.folderId);
+  const items = [{t:"Abrir", fn: () => { location.hash = "#/d/" + d.id; }}];
+  if(d.role !== "view") items.push({t:"Mudar o nome", fn: async () => {
+    const n = await askText("Mudar o nome do diagrama", "Nome", d.name, "Guardar"); if(n != null) act(() => api("PATCH", "api/docs/"+d.id, {name:n}));
+  }});
+  if(d.role === "owner"){
+    items.push({t:"Mover para projeto…", fn: () => moveDoc(d)});
+    items.push({t:"Partilhar", fn: () => openShare("doc", d.id, d.name)});
+  } else items.push({t:"Ver quem tem acesso", fn: () => openShare("doc", d.id, d.name)});
+  items.push({t:"Duplicar", fn: () => act(() => api("POST", `api/docs/${d.id}/duplicate`))});
+  items.push({t:"Exportar (JSON)", fn: () => exportDoc(d.id)});
+  if(d.role === "owner") items.push({t:"Apagar", cls:"danger", fn: async () => {
+    if(await askConfirm("Apagar diagrama", `Apagar “${d.name}” e todos os seus níveis?${d.shares ? " As pessoas com quem está partilhado deixam de o ver." : ""} Não é possível desfazer.`, "Apagar"))
+      act(() => api("DELETE", "api/docs/"+d.id));
+  }});
+  else if(direct) items.push({t:"Sair da partilha", cls:"danger", fn: async () => {
+    if(await askConfirm("Sair da partilha", `Deixar de ter acesso a “${d.name}”?`, "Sair")) act(() => api("DELETE", `api/shares/doc/${d.id}/${me.id}`));
+  }});
+  popMenu(anchor, items);
+}
+async function moveDoc(d){
+  const mine = lib.folders.filter(f => f.role === "owner");
+  openModal(`<h3>Mover “${esc(d.name)}”</h3>
+    <form id="mvForm" class="mform">
+      <div class="field"><label for="mv-f">Projeto</label><select id="mv-f">
+        <option value="">Sem projeto</option>
+        ${mine.map(f => `<option value="${f.id}"${f.id === d.folderId ? " selected" : ""}>${esc(f.name)}</option>`).join("")}
+        <option value="__new">+ Novo projeto…</option>
+      </select></div>
+      <div class="field hide" id="mv-new-row"><label for="mv-new">Nome do novo projeto</label><input id="mv-new" maxlength="120"></div>
+      <p class="muted small">Quem tem acesso ao projeto de destino passa a ter acesso a este diagrama.</p>
+      <p class="ferr" id="mv-err"></p>
+      <div class="mactions"><button type="button" class="tbtn" data-close>Cancelar</button><button class="pbig" type="submit">Mover</button></div>
+    </form>`);
+  $("mv-f").onchange = () => $("mv-new-row").classList.toggle("hide", $("mv-f").value !== "__new");
+  $("mvForm").onsubmit = async e => {
+    e.preventDefault();
+    try{
+      let v = $("mv-f").value;
+      if(v === "__new") v = (await api("POST", "api/folders", {name:$("mv-new").value})).id;
+      await api("PATCH", "api/docs/"+d.id, {folderId: v ? +v : null});
+      closeModal(); await loadLibrary();
+    }catch(ex){ $("mv-err").textContent = ex.message; }
+  };
+}
+
+/* ---------- sharing ---------- */
+async function openShare(kind, id, name){
+  closeMenu();
+  openModal(`<h3>${kind === "folder" ? "Partilhar projeto" : "Partilhar diagrama"} “${esc(name)}”</h3><div id="shBody"><p class="muted">A carregar…</p></div>`);
+  let data;
+  try{ data = await api("GET", `api/shares/${kind}/${id}`); }
+  catch(e){ $("shBody").innerHTML = `<p class="ferr">${esc(e.message)}</p>`; return; }
+  const owner = data.role === "owner";
+  if(!owner) $("modalBody").querySelector("h3").textContent = `Pessoas com acesso a “${name}”`;
+  const link = `${location.origin}${location.pathname}#/${kind === "folder" ? "p" : "d"}/${id}`;
+  const draw = () => {
+    const rows = [{...data.owner, role:"owner"}, ...data.shares];
+    $("shBody").innerHTML = `
+      <p class="muted small">${kind === "folder"
+        ? "Quem tiver acesso ao projeto vê todos os diagramas que ele contém, incluindo os que forem criados depois."
+        : "As pessoas com acesso veem as alterações umas das outras em poucos segundos."} Só pode partilhar com utilizadores já registados.</p>
+      ${owner ? `<form id="shForm" class="shform">
+        <input id="sh-email" type="email" placeholder="Email da pessoa" required autocomplete="off">
+        <select id="sh-role"><option value="edit">Pode editar</option><option value="view">Só pode ver</option></select>
+        <button class="pbig" type="submit">Partilhar</button>
+      </form><p class="ferr" id="sh-err"></p>` : ""}
+      <div class="shlist">${rows.map(u => `<div class="shrow">
+        <span class="avatar sm" data-s="background:${avColor(u.userId)}">${esc(initials(u))}</span>
+        <div class="shwho"><b>${esc(u.name || u.email)}</b>${u.userId === me.id ? ' <span class="tag you">você</span>' : ""}<br><span class="muted">${esc(u.email)}</span></div>
+        ${u.role === "owner" ? `<span class="muted">Dono</span>`
+          : owner ? `<select data-role="${u.userId}"><option value="edit"${u.role==="edit"?" selected":""}>Pode editar</option><option value="view"${u.role==="view"?" selected":""}>Só pode ver</option></select>
+                     <button class="tbtn danger" data-unshare="${u.userId}" title="Retirar acesso">Retirar</button>`
+          : u.userId === me.id ? `<span class="muted">${ROLE_TXT[u.role]}</span><button class="tbtn danger" data-unshare="${u.userId}">Sair</button>`
+          : `<span class="muted">${ROLE_TXT[u.role]}</span>`}
+      </div>`).join("")}</div>
+      ${!owner && !data.shares.some(s => s.userId === me.id) && kind === "doc" ? `<p class="muted small">Tem acesso a este diagrama através do projeto onde ele está.</p>` : ""}
+      <div class="mactions shacts"><button type="button" class="tbtn" id="shCopy">Copiar link</button><span class="grow"></span><button type="button" class="tbtn" data-close>Fechar</button></div>`;
+    if(owner){
+      $("shForm").onsubmit = async e => {
+        e.preventDefault(); $("sh-err").textContent = "";
+        try{ data.shares = (await api("POST", `api/shares/${kind}/${id}`, {email:$("sh-email").value.trim(), role:$("sh-role").value})).shares; draw(); changed(); $("sh-email").focus(); }
+        catch(ex){ $("sh-err").textContent = ex.message; }
+      };
+    }
+  };
+  const changed = () => { if(mode === "home") loadLibrary(); };
+  draw();
+  $("shBody").onchange = async e => {
+    const s = e.target.closest("[data-role]"); if(!s) return;
+    const u = data.shares.find(x => x.userId === +s.dataset.role);
+    try{ data.shares = (await api("POST", `api/shares/${kind}/${id}`, {email:u.email, role:s.value})).shares; draw(); }
+    catch(ex){ showToast(ex.message, [{t:"OK"}]); }
+  };
+  $("shBody").onclick = async e => {
+    if(e.target.closest("#shCopy")){
+      try{ await navigator.clipboard.writeText(link); showToast("Link copiado. Só funciona para quem tem acesso.", [{t:"OK"}]); }
+      catch(_){ showToast(link, [{t:"OK"}]); }
+      return;
+    }
+    const b = e.target.closest("[data-unshare]"); if(!b) return;
+    const uid = +b.dataset.unshare;
+    try{
+      data.shares = (await api("DELETE", `api/shares/${kind}/${id}/${uid}`)).shares;
+      if(uid === me.id){ closeModal(); location.hash = "#/"; loadLibrary(); return; }
+      draw(); changed();
+    }catch(ex){ showToast(ex.message, [{t:"OK"}]); }
+  };
+}
+
+/* ---------- small dialogs and menus ---------- */
+function askText(title, label, value, ok){
+  return new Promise(resolve => {
+    openModal(`<h3>${esc(title)}</h3><form id="askForm" class="mform">
+      <div class="field"><label for="ask-v">${esc(label)}</label><input id="ask-v" maxlength="120" value="${esc(value)}"></div>
+      <div class="mactions"><button type="button" class="tbtn" data-close>Cancelar</button><button class="pbig" type="submit">${esc(ok)}</button></div></form>`, () => resolve(null));
+    setTimeout(() => $("ask-v") && $("ask-v").select(), 40);
+    $("askForm").onsubmit = e => { e.preventDefault(); const v = $("ask-v").value.trim(); if(!v) return; closeModal(true); resolve(v); };
+  });
+}
+function askConfirm(title, text, ok){
+  return new Promise(resolve => {
+    openModal(`<h3>${esc(title)}</h3><p class="mtext">${esc(text)}</p>
+      <div class="mactions"><button type="button" class="tbtn" data-close>Cancelar</button><button class="pbig danger" id="askOk">${esc(ok)}</button></div>`, () => resolve(false));
+    $("askOk").onclick = () => { closeModal(true); resolve(true); };
+    setTimeout(() => $("askOk") && $("askOk").focus(), 40);
+  });
+}
+function popMenu(anchor, items){
+  const p = $("pop");
+  p.innerHTML = items.map((it, i) => `<button role="menuitem" data-i="${i}" class="${it.cls||""}">${esc(it.t)}</button>`).join("");
+  p.classList.remove("hide");
+  const r = anchor.getBoundingClientRect(), w = p.offsetWidth, h = p.offsetHeight;
+  p.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px";
+  p.style.top = (r.bottom + 6 + h > innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
+  p.onclick = e => { const b = e.target.closest("[data-i]"); if(!b) return; closePop(); items[+b.dataset.i].fn(); };
+}
+function closePop(){ $("pop").classList.add("hide"); }
+document.addEventListener("pointerdown", e => { if(!e.target.closest("#pop") && !e.target.closest("[data-docmenu],#hFolderMenu")) closePop(); });
+
+/* ---------- presence: who else has this diagram open ---------- */
+const AV_COLORS = ["var(--l1)","var(--l2)","var(--l3)","var(--l4)"];
+const avColor = id => AV_COLORS[(Number(id) || 0) % AV_COLORS.length];
+function renderPresence(){
+  const el = $("presence");
+  el.innerHTML = others.slice(0, 4).map(u => `<span class="avatar sm2" title="${esc(who(u))} também está aqui" data-s="background:${avColor(u.id)}">${esc(initials(u))}</span>`).join("")
+    + (others.length > 4 ? `<span class="avatar sm2 more">+${others.length - 4}</span>` : "");
+  el.title = others.length ? others.map(who).join(", ") + (others.length > 1 ? " também estão" : " também está") + " a ver este diagrama" : "";
+}
+
+/* ---------- screens and routing ---------- */
+function showHome(){
+  mode = "home";
+  $("boot").classList.add("hide"); $("auth").classList.add("hide"); app.classList.remove("hide");
+  app.classList.add("mode-home"); app.classList.remove("ro");
+  document.title = appCfg.appName || "Camadas";
+  $("crumbs").innerHTML = ""; $("presence").innerHTML = "";
+  renderHome();
+}
+function showDoc(){
+  mode = "doc";
+  app.classList.remove("mode-home"); app.classList.toggle("ro", isReadOnly);
+  document.title = `${diagName(diagrams.root)} · ${appCfg.appName || "Camadas"}`;
+  $("shareBtn").querySelector("span").textContent = docMeta.role === "owner" ? "Partilhar" : "Pessoas";
+  renderPresence(); setStatus(); render();
+}
+let routing = Promise.resolve();
+function route(){ routing = routing.then(doRoute, doRoute); }
+async function doRoute(){
+  if(!me) return;
+  const h = location.hash;
+  const m = h.match(/^#\/d\/(\d+)/);
+  if(m){ await openDoc(+m[1]); return; }
+  if(docMeta && !(await closeDoc())){ history.replaceState(null, "", "#/d/" + docMeta.id); return; }
+  const p = h.match(/^#\/(p\/(\d+)|none|shared)/);
+  homeView = !p ? "recent" : p[2] ? "p" + p[2] : p[1];
+  showHome();
+  await loadLibrary();
+}
+addEventListener("hashchange", route);
+$("homeBtn").onclick = () => { location.hash = docMeta && docMeta.folderId && lib.folders.some(f => f.id === docMeta.folderId) ? "#/p/" + docMeta.folderId : "#/"; };
+$("brandBtn").onclick = () => { location.hash = "#/"; };
+$("brandBtn").onkeydown = e => { if(e.key === "Enter") location.hash = "#/"; };
+$("shareBtn").onclick = () => { if(docMeta) openShare("doc", docMeta.id, diagName(diagrams.root)); };
 
 /* ---------- accounts: sign in / register ---------- */
 let authMode = "login";
@@ -612,6 +1069,7 @@ function initials(u){ const n = (u.name || u.email || "?").trim(); const p = n.s
 function showApp(){
   $("boot").classList.add("hide"); $("auth").classList.add("hide"); app.classList.remove("hide");
   $("avatar").textContent = initials(me);
+  $("avatar").style.background = avColor(me.id);
   $("userName").textContent = me.name || me.email;
   $("menuWho").textContent = me.email;
   $("mUsers").classList.toggle("hide", !me.isAdmin);
@@ -649,8 +1107,9 @@ $("authForm").addEventListener("submit", async e => {
     const r = await api("POST", authMode === "login" ? "api/auth/login" : "api/auth/register", body);
     $("a-pass").value = "";
     me = r.user;
-    if(lastUserId === me.id && (pending.size || deleted.size)){ showApp(); render(); flush(); }
-    else { pending.clear(); deleted.clear(); await openWorkspace(); }
+    showApp();
+    if(lastUserId === me.id && docMeta){ showDoc(); flush(); }   // same person again: keep unsaved edits
+    else { docMeta = null; pending.clear(); deleted.clear(); route(); }
     lastUserId = me.id;
   }catch(err){ $("authErr").textContent = err.message; }
   finally{ btn.disabled = false; }
@@ -663,17 +1122,28 @@ document.addEventListener("pointerdown", e => { if(!e.target.closest(".umenu")) 
 $("mExport").onclick = () => { closeMenu(); doExport(); };
 $("mLogout").onclick = async () => {
   closeMenu();
-  if(pending.size || inflight.size) await flush();
+  await saveAll();
   try{ await api("POST", "api/auth/logout"); }catch(e){}
-  me = null; lastUserId = null; diagrams = {root:newRoot()}; pending.clear(); deleted.clear(); undo.length = 0;
+  me = null; lastUserId = null; docMeta = null; diagrams = {root:newRoot()}; bases = {}; pending.clear(); deleted.clear(); undo.length = 0;
+  lib = {folders:[], docs:[]};
   showAuth("login");
 };
 $("mPass").onclick = () => { closeMenu(); openProfile(); };
 $("mUsers").onclick = () => { closeMenu(); openUsers(); };
 
 /* ---------- modal ---------- */
-function openModal(html){ $("modalBody").innerHTML = html; $("modal").classList.remove("hide"); const f = $("modalBody").querySelector("input"); if(f) setTimeout(()=>f.focus(), 30); }
-function closeModal(){ $("modal").classList.add("hide"); $("modalBody").innerHTML = ""; }
+let modalCancel = null;
+function openModal(html, onCancel){
+  if(modalCancel){ const c = modalCancel; modalCancel = null; c(); }
+  closePop();
+  $("modalBody").innerHTML = html; $("modal").classList.remove("hide"); modalCancel = onCancel || null;
+  const f = $("modalBody").querySelector("input:not([disabled])"); if(f) setTimeout(()=>f.focus(), 30);
+}
+function closeModal(silent){
+  const c = modalCancel; modalCancel = null;
+  $("modal").classList.add("hide"); $("modalBody").innerHTML = "";
+  if(c && silent !== true) c();
+}
 $("modal").addEventListener("pointerdown", e => { if(e.target === $("modal")) closeModal(); });
 $("modal").addEventListener("click", e => { if(e.target.closest("[data-close]")) closeModal(); });
 
@@ -770,7 +1240,7 @@ async function onUserClick(e){
 }
 
 /* ---------- start ---------- */
-addEventListener("resize", () => { if(me) renderInspector(); });
+addEventListener("resize", () => { if(me && mode === "doc") renderInspector(); });
 if(innerWidth <= 980) app.classList.add("no-tree");
 (async function boot(){
   try{ appCfg = await api("GET", "api/config"); }catch(e){}
@@ -779,7 +1249,8 @@ if(innerWidth <= 980) app.classList.add("no-tree");
   try{
     const r = await api("GET", "api/auth/me");
     me = r.user; lastUserId = me.id;
-    await openWorkspace();
+    showApp();
+    route();
   }catch(e){
     if(e.status === 401) showAuth("login");
     else { $("boot").textContent = "Não foi possível ligar ao servidor. " + e.message; }

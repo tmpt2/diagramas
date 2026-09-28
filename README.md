@@ -183,10 +183,32 @@ e aceda por `http://IP-do-servidor:3000`. Use só numa rede de confiança.
 2. Menu da conta (canto superior direito) → **Perfil e password** → mude a password.
 3. Depois pode apagar `ADMIN_PASSWORD` do `.env`.
 4. **Gerir utilizadores** (só administradores): criar contas, repor passwords, dar ou tirar o papel de
-   administrador, apagar contas (apaga também os diagramas dessa conta).
+   administrador, apagar contas (apaga também os projetos e diagramas dessa conta).
 
-Cada utilizador só vê os seus próprios diagramas. **Exportar/Importar** no menu da conta guarda ou
-repõe todos os diagramas desse utilizador num ficheiro JSON, compatível com a versão que usava no Claude.
+---
+
+## Diagramas, projetos e partilha
+
+- **Vários diagramas.** Depois de entrar vê a lista dos seus diagramas. **Novo diagrama** cria um vazio;
+  o nome muda-se no painel da direita (com nada selecionado) ou no menu **⋯** do cartão.
+- **Projetos.** Organize os diagramas em projetos (pastas): **Novo projeto** na barra lateral e, no cartão
+  de um diagrama, **⋯ → Mover para projeto**. Apagar um projeto não apaga os diagramas: passam para
+  *Sem projeto*.
+- **Partilhar.** No cartão (**⋯ → Partilhar**), dentro do diagrama (botão **Partilhar** no topo) ou num
+  projeto (**Partilhar** partilha todos os diagramas do projeto, incluindo os que forem criados depois).
+  Escreve-se o email de um utilizador já registado e escolhe-se **Pode editar** ou **Só pode ver**.
+  O que foi partilhado consigo aparece em **Partilhados comigo**.
+- **Editar em conjunto.** Com o mesmo diagrama aberto, cada pessoa vê as alterações das outras em cerca
+  de 4 segundos, e os avatares no topo mostram quem mais está a ver. Se duas pessoas mexerem ao mesmo
+  tempo, as alterações são juntadas caixa a caixa. Só quando as duas mudam o mesmo campo da mesma caixa
+  fica a última alteração.
+- Só o dono pode partilhar, mover ou apagar. Quem recebeu uma partilha pode sair dela no menu **⋯**.
+- **Exportar** (dentro do diagrama ou no menu **⋯**) guarda um diagrama num ficheiro JSON. **Importar**
+  cria sempre um diagrama novo a partir de um ficheiro, incluindo os exportados da versão que usava no Claude.
+
+Ao atualizar de uma versão anterior, os diagramas de cada utilizador passam automaticamente para um
+diagrama com o nome do mapa principal. A tabela antiga (`camadas_diagrams`) fica intacta como cópia de
+segurança e pode ser apagada mais tarde.
 
 ---
 
@@ -213,7 +235,8 @@ Os dados estão todos na MariaDB (o contentor não guarda nada). Exemplo de cóp
 
 ```bash
 mysqldump -u root -p --single-transaction camadas \
-  camadas_users camadas_sessions camadas_diagrams camadas_schema_migrations \
+  camadas_users camadas_sessions camadas_folders camadas_docs camadas_sheets \
+  camadas_doc_shares camadas_folder_shares camadas_schema_migrations \
   | gzip > /backups/camadas-$(date +%F).sql.gz
 ```
 

@@ -33,20 +33,27 @@
 </div>
 <div class="app hide" id="app">
   <header class="top">
-    <button class="tbtn icon-only" id="toggleTree" title="Mostrar/ocultar mapa de diagramas" aria-label="Mostrar ou ocultar mapa de diagramas">
+    <button class="tbtn icon-only doc-only" id="homeBtn" title="Todos os diagramas" aria-label="Voltar à lista de diagramas">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
+    </button>
+    <button class="tbtn icon-only doc-only" id="toggleTree" title="Mostrar/ocultar mapa de diagramas" aria-label="Mostrar ou ocultar mapa de diagramas">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
     </button>
-    <div class="brand">
+    <div class="brand" id="brandBtn" role="link" tabindex="0" title="Todos os diagramas">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path class="b1" d="M12 3 3 7.5 12 12l9-4.5L12 3Z"/><path class="b2" d="m3 12 9 4.5 9-4.5" stroke-width="2"/><path class="b3" d="m3 16.5 9 4.5 9-4.5" stroke-width="2"/></svg>
       <b>Camadas</b>
     </div>
     <nav class="crumbs" id="crumbs" aria-label="Níveis"></nav>
-    <div class="status" id="status"><i></i><span>A ligar…</span></div>
-    <button class="tbtn icon-only" id="undoBtn" title="Anular (Ctrl+Z)" aria-label="Anular">
+    <div class="presence doc-only" id="presence"></div>
+    <div class="status doc-only" id="status"><i></i><span>A ligar…</span></div>
+    <button class="tbtn doc-only" id="shareBtn" title="Partilhar este diagrama com outras pessoas">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M15.5 5.2a3.2 3.2 0 0 1 0 6M17.5 13.8c2 .7 3.5 2.6 3.5 5.2"/></svg><span class="hide-sm">Partilhar</span>
+    </button>
+    <button class="tbtn icon-only doc-only edit-only" id="undoBtn" title="Anular (Ctrl+Z)" aria-label="Anular">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
     </button>
-    <button class="tbtn hide-sm" id="exportBtn" title="Exportar tudo em JSON">Exportar</button>
-    <label class="tbtn hide-sm" for="importFile" title="Importar ficheiro JSON" tabindex="0">Importar</label>
+    <button class="tbtn hide-sm doc-only" id="exportBtn" title="Exportar este diagrama em JSON">Exportar</button>
+    <label class="tbtn hide-sm home-only" for="importFile" title="Importar um ficheiro JSON como diagrama novo" tabindex="0">Importar</label>
     <input type="file" id="importFile" accept=".json,application/json">
     <div class="umenu">
       <button class="tbtn userbtn" id="userBtn" aria-haspopup="menu" aria-expanded="false" title="Conta"><span class="avatar" id="avatar"></span><span id="userName" class="hide-sm uname"></span>
@@ -55,13 +62,18 @@
         <div class="who" id="menuWho"></div>
         <button role="menuitem" id="mPass">Perfil e password</button>
         <button role="menuitem" id="mUsers" class="hide">Gerir utilizadores</button>
-        <button role="menuitem" id="mExport">Exportar diagramas (JSON)</button>
-        <label role="menuitem" for="importFile" class="mi">Importar diagramas…</label>
+        <button role="menuitem" id="mExport" class="doc-only">Exportar este diagrama (JSON)</button>
+        <label role="menuitem" for="importFile" class="mi">Importar diagrama…</label>
         <hr>
         <button role="menuitem" id="mLogout">Sair</button>
       </div>
     </div>
   </header>
+
+  <section class="home" id="home">
+    <nav class="hnav" id="hnav" aria-label="Projetos"></nav>
+    <div class="hmain" id="hmain"></div>
+  </section>
 
   <aside class="tree" id="tree">
     <h2>Mapa de diagramas</h2>
@@ -92,12 +104,13 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
       </button>
     </div>
-    <div class="toast hide" id="toast"></div>
   </main>
 
   <aside class="insp" id="insp"></aside>
 </div>
 
+<div class="toast hide" id="toast"></div>
+<div class="pop hide" id="pop" role="menu"></div>
 <div class="modal hide" id="modal"><div class="mcard" role="dialog" aria-modal="true"><button class="mclose" data-close aria-label="Fechar">×</button><div id="modalBody"></div></div></div>
 </body>
 </html>
