@@ -89,7 +89,11 @@ button{cursor:pointer}
   background-color:var(--ground);
   background-image:radial-gradient(var(--dots) 1.1px,transparent 1.3px);
 }
+.board.grab{cursor:grab}
 .board.panning{cursor:grabbing}
+.marquee{position:absolute;pointer-events:none;z-index:5;border:1px solid var(--accent);border-radius:2px;
+  background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.marquee.hide{display:none}
 .world{position:absolute;left:0;top:0;transform-origin:0 0}
 .edges{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none}
 .edges path.vis{fill:none;stroke:var(--line-strong);stroke-width:1.6}

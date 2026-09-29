@@ -45,6 +45,7 @@ const lvColor = l => `var(--l${Math.min(Math.max(l,1),4)})`;
 let diagrams = {};          // sheet id -> sheet of the open diagram (root + one per detailed box)
 let currentId = "root";
 let sel = null;             // {kind:'node'|'edge', id}
+let multi = new Set();      // node ids when two or more boxes are selected (sel is null then)
 const views = {};           // id -> {x,y,k}
 const undo = [];            // [{id, json}]
 let me = null;              // signed-in user
@@ -189,7 +190,7 @@ async function openDoc(id){
   docMeta = r.doc; docRev = r.doc.rev; others = r.presence || [];
   isReadOnly = docMeta.role === "view";
   if(!diagrams.root){ diagrams.root = {...newRoot(), name:docMeta.name}; touch("root"); }
-  undo.length = 0; sel = null; for(const k in views) delete views[k];
+  undo.length = 0; clearSel(); for(const k in views) delete views[k];
   pending.clear(); deleted.clear(); saveError = null;
   currentId = "root";
   try{ const c = localStorage.getItem(curKey()); if(c && diagrams[c]) currentId = c; }catch(e){}
@@ -201,7 +202,7 @@ async function closeDoc(){
     showToast("Há alterações por guardar. Verifique a ligação e tente de novo.", [{t:"OK"}]);
     return false;
   }
-  docMeta = null; diagrams = {root:newRoot()}; bases = {}; others = []; undo.length = 0; sel = null;
+  docMeta = null; diagrams = {root:newRoot()}; bases = {}; others = []; undo.length = 0; clearSel();
   pending.clear(); deleted.clear(); isReadOnly = false;
   return true;
 }
@@ -277,7 +278,7 @@ function doUndo(){
     arr.forEach(d => { diagrams[d.id] = d; deleted.delete(d.id); touch(d.id); });
     currentId = u.id.slice(8);
   } else { diagrams[u.id] = JSON.parse(u.json); deleted.delete(u.id); currentId = u.id; touch(u.id); }
-  sel = null; render();
+  clearSel(); render();
   $("undoBtn").disabled = !undo.length;
 }
 
@@ -285,6 +286,20 @@ function doUndo(){
 function nodeById(id, d=cur()){ return d.nodes.find(n=>n.id===id); }
 function edgeById(id, d=cur()){ return d.edges.find(e=>e.id===id); }
 function findSel(){ if(!sel) return null; return sel.kind==="node" ? nodeById(sel.id) : edgeById(sel.id); }
+// Selected box ids, whether one (sel) or several (multi).
+function selNodeIds(){ return multi.size ? [...multi] : sel && sel.kind==="node" ? [sel.id] : []; }
+function isNodeSel(id){ return multi.has(id) || (!!sel && sel.kind==="node" && sel.id===id); }
+function selectNodes(ids){
+  ids = [...new Set(ids)];
+  multi = ids.length > 1 ? new Set(ids) : new Set();
+  sel = ids.length === 1 ? {kind:"node", id:ids[0]} : null;
+}
+function clearSel(){ sel = null; multi.clear(); }
+// Drop selected boxes that no longer exist on the current sheet (undo, other people's edits…).
+function pruneSel(){
+  if(!multi.size) return;
+  const d = cur(); selectNodes([...multi].filter(id => nodeById(id, d)));
+}
 function childOf(n){ return n && n.childId ? diagrams[n.childId] : null; }
 function countDeep(d){ if(!d) return 0; let c = d.nodes.length; d.nodes.forEach(n=>{ if(n.childId) c += countDeep(diagrams[n.childId]); }); return c; }
 function descendants(d, out=[]){ if(!d) return out; d.nodes.forEach(n=>{ const c = diagrams[n.childId]; if(c){ out.push(c); descendants(c,out);} }); return out; }
@@ -317,7 +332,7 @@ function addNode(type, wx, wy){
     x:0, y:0, w:t.w, h:t.h, color:null};
   const spot = freeSpot(d, wx - t.w/2, wy - t.h/2, t.w, t.h); n.x = spot.x; n.y = spot.y;
   if(type==="note") n.label = "Escreva uma nota";
-  d.nodes.push(n); sel = {kind:"node", id:n.id};
+  d.nodes.push(n); selectNodes([n.id]);
   touch(d.id); render();
   setTimeout(()=>{ const i=$("f-label"); if(i){ i.focus(); i.select(); } }, 30);
 }
@@ -326,26 +341,28 @@ function addEdge(from, to){
   if(from===to || d.edges.some(e=>e.from===from && e.to===to)) return;
   snapshot();
   const e = {id:uid("e"), from, to, label:"", style:"solid"};
-  d.edges.push(e); sel = {kind:"edge", id:e.id};
+  d.edges.push(e); multi.clear(); sel = {kind:"edge", id:e.id};
   touch(d.id); render();
 }
 function deleteSelection(force){
-  if(!sel || isReadOnly) return;
+  if((!sel && !multi.size) || isReadOnly) return;
   const d = cur();
-  if(sel.kind==="edge"){ snapshot(); d.edges = d.edges.filter(e=>e.id!==sel.id); sel=null; touch(d.id); render(); return; }
-  const n = nodeById(sel.id); if(!n) return;
-  const ch = childOf(n), inner = countDeep(ch);
+  if(sel && sel.kind==="edge"){ snapshot(); d.edges = d.edges.filter(e=>e.id!==sel.id); sel=null; touch(d.id); render(); return; }
+  const ns = selNodeIds().map(id => nodeById(id)).filter(Boolean); if(!ns.length) return;
+  const chs = ns.map(childOf).filter(Boolean), inner = chs.reduce((a, c) => a + countDeep(c), 0);
   if(inner && !force){
-    showToast(`Apagar “${n.label}” e as ${inner} caixas dos níveis interiores?`, [
+    const what = ns.length === 1 ? `“${ns[0].label}”` : `as ${ns.length} caixas selecionadas`;
+    showToast(`Apagar ${what} e as ${inner} caixas dos níveis interiores?`, [
       {t:"Apagar", cls:"danger", fn:()=>deleteSelection(true)}, {t:"Cancelar"}]);
     return;
   }
-  const gone = ch ? [ch, ...descendants(ch)] : [];
+  const gone = chs.flatMap(ch => [ch, ...descendants(ch)]);
   undo.push({id:"__multi:"+d.id, json:JSON.stringify([JSON.parse(JSON.stringify(d)), ...gone])}); $("undoBtn").disabled=false;
-  d.nodes = d.nodes.filter(x=>x.id!==n.id);
-  d.edges = d.edges.filter(e=>e.from!==n.id && e.to!==n.id);
+  const ids = new Set(ns.map(n => n.id));
+  d.nodes = d.nodes.filter(x=>!ids.has(x.id));
+  d.edges = d.edges.filter(e=>!ids.has(e.from) && !ids.has(e.to));
   gone.forEach(g => { delete diagrams[g.id]; deleted.add(g.id); pending.add(g.id); });
-  sel = null; touch(d.id); render();
+  clearSel(); touch(d.id); render();
 }
 function enter(nodeId){
   const d = cur(), n = nodeById(nodeId); if(!n) return;
@@ -360,7 +377,7 @@ function enter(nodeId){
 function go(id){
   if(!diagrams[id]) return;
   const from = currentId;
-  currentId = id; sel = null;
+  currentId = id; clearSel();
   // when going up, select the node we came from
   const fd = diagrams[from];
   if(fd && fd.parentId === id) sel = {kind:"node", id:fd.parentNodeId};
@@ -405,6 +422,7 @@ function applyView(){
 function render(){
   const d = cur();
   document.documentElement.style.setProperty("--accent", lvColor(d.level));
+  pruneSel();
   if(view().fresh){ view().fresh = false; fit(true); }
   applyView();
   renderEdges(); renderNodes(); renderCrumbs(); renderTree(); renderInside(); renderInspector();
@@ -415,7 +433,7 @@ function renderNodes(){
   const d = cur();
   nodesEl.innerHTML = d.nodes.map(n => {
     const ch = childOf(n), cnt = ch ? ch.nodes.length : 0;
-    const selc = sel && sel.kind==="node" && sel.id===n.id ? " sel" : "";
+    const selc = isNodeSel(n.id) ? " sel" : "";
     const glyph = n.type==="actor" ? `<svg class="glyph" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${GLYPH.actor}</svg>`
                : n.type==="data" ? "" : "";
     const sub = n.type==="system" ? "Sistema externo" : n.type==="data" ? "Dados" : "";
@@ -468,7 +486,14 @@ function renderInspector(){
   const d = cur(), el = $("insp"), s = findSel();
   const focused = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
   const dis = isReadOnly ? " disabled" : "";
-  if(s && sel.kind==="node"){
+  if(multi.size){
+    const ns = selNodeIds().map(id => nodeById(id)).filter(Boolean), c0 = ns[0].color || null;
+    const same = ns.every(n => (n.color || null) === c0);
+    el.innerHTML = `<h2>${ns.length} caixas selecionadas · nível ${d.level}</h2>
+      <p data-s="color:var(--muted);font-size:12.5px;line-height:1.5;margin:0 0 14px">Arraste uma das caixas para mover todas. Shift+clique junta ou retira caixas da seleção.</p>
+      <div class="field"><label>Cor</label><div class="swatches" id="f-color">${COLORS.map(c=>`<button class="sw${same && c0===c?" on":""}"${dis} data-color="${c||""}" aria-label="${c?"Cor "+c:"Cor do nível"}" data-s="background:${c==="ink"?"var(--ink)":c?`var(--${c})`:`linear-gradient(135deg,${lvColor(d.level)} 50%,var(--surface) 50%)`}"></button>`).join("")}</div></div>
+      ${isReadOnly ? "" : `<button class="dbtn" id="f-del">Apagar ${ns.length} caixas</button>`}`;
+  } else if(s && sel.kind==="node"){
     const n = s, ch = childOf(n), canDeep = d.level < MAX_LEVEL && (!isReadOnly || (ch && ch.nodes.length));
     el.innerHTML = `<h2>${TYPES[n.type].name} · nível ${d.level}</h2>
       <div class="field"><label for="f-label">Nome</label><input id="f-label" value="${esc(n.label)}" maxlength="120"${dis}></div>
@@ -498,7 +523,7 @@ function renderInspector(){
       ${d.parentId ? `<button class="tbtn" id="f-up" data-s="width:100%;justify-content:center">Subir para o nível ${d.level-1}</button>` : `<p data-s="color:var(--muted);font-size:12.5px;line-height:1.5;margin:0">Selecione uma caixa para a editar. Faça duplo clique numa caixa para descer ao nível seguinte (até ao nível ${MAX_LEVEL}).</p>`}`;
   }
   if(focused && $(focused)){ const f=$(focused); f.focus(); if(f.setSelectionRange && f.value!=null){ try{ const L=f.value.length; f.setSelectionRange(L,L);}catch(e){} } }
-  const hasSel = !!s;
+  const hasSel = !!s || multi.size > 0;
   if(innerWidth <= 980) app.classList.toggle("no-insp", !hasSel);
   else app.classList.toggle("no-insp", false);
 }
@@ -527,7 +552,7 @@ $("insp").addEventListener("click", e => {
   if(b.id==="f-del") return deleteSelection();
   if(isReadOnly) return;
   if(b.dataset.type){ snapshot(); const n=findSel(), t=TYPES[b.dataset.type]; const cx=n.x+n.w/2, cy=n.y+n.h/2; n.type=b.dataset.type; n.w=t.w; n.h=t.h; n.x=Math.round((cx-t.w/2)/10)*10; n.y=Math.round((cy-t.h/2)/10)*10; touch(d.id); render(); }
-  else if(b.dataset.color!==undefined){ snapshot(); findSel().color=b.dataset.color||null; touch(d.id); render(); }
+  else if(b.dataset.color!==undefined){ snapshot(); selNodeIds().forEach(id => { const n = nodeById(id); if(n) n.color = b.dataset.color||null; }); touch(d.id); render(); }
   else if(b.dataset.style){ snapshot(); findSel().style=b.dataset.style; touch(d.id); render(); }
   else if(b.id==="f-flip"){ snapshot(); const x=findSel(); [x.from,x.to]=[x.to,x.from]; touch(d.id); render(); }
 });
@@ -543,13 +568,28 @@ $("palette").addEventListener("click", e => {
 });
 
 /* ---------- board pointer handling ---------- */
-let drag = null;             // {kind:'move'|'pan'|'link'|'pinch', ...}
+let drag = null;             // {kind:'move'|'pan'|'link'|'pinch'|'marquee', ...}
 const pointers = new Map();
 let lastTap = {t:0, id:null, x:0, y:0};
 function toWorld(cx, cy){ const r = board.getBoundingClientRect(), v = view(); return {x:(cx-r.left-v.x)/v.k, y:(cy-r.top-v.y)/v.k}; }
 
+// Selection rectangle, drawn in screen coordinates over the board.
+const marqueeEl = document.createElement("div");
+marqueeEl.className = "marquee hide";
+board.appendChild(marqueeEl);
+let spaceDown = false;       // Space held: dragging with the mouse pans instead of selecting
+let noCtxMenu = false;       // the right button was just used to pan
+function startPan(e){
+  const v = view();
+  drag = {kind:"pan", sx:e.clientX, sy:e.clientY, vx:v.x, vy:v.y, moved:false, button:e.button};
+  board.classList.add("panning");
+}
+function renderSelOnly(){ renderNodes(); renderEdges(); renderInspector(); }
+
 board.addEventListener("pointerdown", e => {
-  if(e.button !== 0 && e.pointerType==="mouse") return;
+  const mouse = e.pointerType === "mouse";
+  if(mouse && e.button > 2) return;
+  if(mouse && e.button === 1) e.preventDefault();          // no auto-scroll on middle click
   pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
   board.setPointerCapture(e.pointerId);
   if(pointers.size === 2){
@@ -557,6 +597,8 @@ board.addEventListener("pointerdown", e => {
     drag = {kind:"pinch", dist:Math.hypot(a.x-b.x,a.y-b.y), k:v.k, mid:{x:(a.x+b.x)/2,y:(a.y+b.y)/2}, vx:v.x, vy:v.y};
     return;
   }
+  // middle or right button, or Space + drag: pan the board
+  if(mouse && (e.button !== 0 || spaceDown)){ startPan(e); return; }
   const t = e.target;
   const portEl = t.closest("[data-port]"), deepEl = t.closest("[data-deep]"), nodeEl = t.closest("[data-node]"), edgeEl = t.closest("[data-edge]");
   const now = performance.now();
@@ -568,22 +610,29 @@ board.addEventListener("pointerdown", e => {
   }
   if(nodeEl){
     const id = nodeEl.dataset.node, n = nodeById(id);
+    if(e.shiftKey || e.ctrlKey || e.metaKey){ // add the box to the selection, or take it out
+      const ids = selNodeIds();
+      selectNodes(ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+      lastTap = {t:0, id:null, x:0, y:0}; drag = null;
+      renderSelOnly(); return;
+    }
     const dbl = lastTap.id===id && now-lastTap.t < 380 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 12;
     lastTap = {t:now, id, x:e.clientX, y:e.clientY};
     if(dbl){ drag=null; if(n.type!=="note") enter(id); return; }
-    if(!(sel && sel.kind==="node" && sel.id===id)){ sel = {kind:"node", id}; renderNodes(); renderEdges(); renderInspector(); }
-    const w = toWorld(e.clientX, e.clientY);
-    drag = {kind:"move", id, dx:w.x-n.x, dy:w.y-n.y, sx:e.clientX, sy:e.clientY, moved:false, diagram:currentId};
+    if(!isNodeSel(id)){ selectNodes([id]); renderSelOnly(); }
+    // every selected box moves together, keeping the grabbed one on the grid
+    const items = selNodeIds().map(i => nodeById(i)).filter(Boolean).map(m => ({id:m.id, ox:m.x, oy:m.y}));
+    drag = {kind:"move", lead:id, items, w0:toWorld(e.clientX, e.clientY), sx:e.clientX, sy:e.clientY, moved:false, diagram:currentId};
     return;
   }
-  if(edgeEl){ sel = {kind:"edge", id:edgeEl.dataset.edge}; renderEdges(); renderNodes(); renderInspector(); drag=null; return; }
+  if(edgeEl){ multi.clear(); sel = {kind:"edge", id:edgeEl.dataset.edge}; renderSelOnly(); drag=null; return; }
   // background
   const dbl = lastTap.id==="__bg" && now-lastTap.t < 380 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 12;
   lastTap = {t:now, id:"__bg", x:e.clientX, y:e.clientY};
   if(dbl){ const w = toWorld(e.clientX, e.clientY); addNode("activity", w.x, w.y); drag=null; return; }
-  const v = view();
-  drag = {kind:"pan", sx:e.clientX, sy:e.clientY, vx:v.x, vy:v.y, moved:false};
-  board.classList.add("panning");
+  if(!mouse){ startPan(e); return; }  // on touch screens, one finger pans
+  const add = e.shiftKey || e.ctrlKey || e.metaKey;
+  drag = {kind:"marquee", sx:e.clientX, sy:e.clientY, w0:toWorld(e.clientX, e.clientY), add, base:add ? selNodeIds() : [], ids:null, moved:false};
 });
 board.addEventListener("pointermove", e => {
   if(pointers.has(e.pointerId)) pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
@@ -605,12 +654,31 @@ board.addEventListener("pointermove", e => {
     if(isReadOnly) return;
     if(!drag.moved && Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) < 4) return;
     if(!drag.moved){ snapshot(); drag.moved = true; }
-    const n = nodeById(drag.id); if(!n) return;
+    const lead = drag.items.find(it => it.id===drag.lead); if(!lead) return;
     const w = toWorld(e.clientX, e.clientY);
-    n.x = Math.round((w.x-drag.dx)/10)*10; n.y = Math.round((w.y-drag.dy)/10)*10;
-    const el = nodesEl.querySelector(`[data-node="${n.id}"]`);
-    if(el){ el.style.left=n.x+"px"; el.style.top=n.y+"px"; el.classList.add("dragging"); }
+    const dx = Math.round((lead.ox + w.x - drag.w0.x)/10)*10 - lead.ox, dy = Math.round((lead.oy + w.y - drag.w0.y)/10)*10 - lead.oy;
+    drag.items.forEach(it => {
+      const n = nodeById(it.id); if(!n) return;
+      n.x = it.ox + dx; n.y = it.oy + dy;
+      const el = nodesEl.querySelector(`[data-node="${n.id}"]`);
+      if(el){ el.style.left=n.x+"px"; el.style.top=n.y+"px"; el.classList.add("dragging"); }
+    });
     renderEdges(); return;
+  }
+  if(drag.kind==="marquee"){
+    if(!drag.moved && Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) < 4) return;
+    drag.moved = true;
+    const r = board.getBoundingClientRect();
+    Object.assign(marqueeEl.style, {left:Math.min(drag.sx, e.clientX)-r.left+"px", top:Math.min(drag.sy, e.clientY)-r.top+"px",
+      width:Math.abs(e.clientX-drag.sx)+"px", height:Math.abs(e.clientY-drag.sy)+"px"});
+    marqueeEl.classList.remove("hide");
+    const w = toWorld(e.clientX, e.clientY);
+    const x0 = Math.min(w.x, drag.w0.x), x1 = Math.max(w.x, drag.w0.x), y0 = Math.min(w.y, drag.w0.y), y1 = Math.max(w.y, drag.w0.y);
+    const hit = cur().nodes.filter(n => n.x < x1 && n.x+n.w > x0 && n.y < y1 && n.y+n.h > y0).map(n => n.id);
+    const ids = new Set([...drag.base, ...hit]);
+    drag.ids = [...ids];
+    nodesEl.querySelectorAll("[data-node]").forEach(el => el.classList.toggle("sel", ids.has(el.dataset.node)));
+    return;
   }
   if(drag.kind==="link"){
     const A = nodeById(drag.from), w = toWorld(e.clientX, e.clientY);
@@ -630,8 +698,20 @@ function endPointer(e){
   if(d.kind==="pinch"){ if(pointers.size<2) drag=null; return; }
   drag = null;
   board.classList.remove("panning");
-  if(d.kind==="pan" && !d.moved && e.type==="pointerup"){ if(sel){ sel=null; renderNodes(); renderEdges(); renderInspector(); } }
-  if(d.kind==="move"){ if(d.moved){ touch(currentId); render(); } }
+  if(d.kind==="pan"){
+    if(d.button === 2 && d.moved) noCtxMenu = true;
+    if(!d.moved && e.type==="pointerup" && d.button === 0 && !spaceDown && (sel || multi.size)){ clearSel(); renderSelOnly(); }
+  }
+  if(d.kind==="marquee"){
+    marqueeEl.classList.add("hide");
+    if(e.type !== "pointerup"){ renderSelOnly(); }
+    else if(d.moved){ selectNodes(d.ids || d.base); renderSelOnly(); }
+    else if(!d.add && (sel || multi.size)){ clearSel(); renderSelOnly(); }  // plain click on the background
+  }
+  if(d.kind==="move"){
+    if(d.moved){ touch(currentId); render(); }
+    else if(d.items.length > 1 && e.type==="pointerup"){ selectNodes([d.lead]); renderSelOnly(); } // click inside a group: keep just that box
+  }
   if(d.kind==="link"){
     const over = document.elementFromPoint(e.clientX, e.clientY);
     const tgt = over && over.closest("[data-node]");
@@ -641,6 +721,7 @@ function endPointer(e){
 }
 board.addEventListener("pointerup", endPointer);
 board.addEventListener("pointercancel", endPointer);
+board.addEventListener("contextmenu", e => { if(noCtxMenu){ e.preventDefault(); noCtxMenu = false; } });
 
 /* ---------- zoom ---------- */
 function clampK(k){ return Math.min(2.5, Math.max(.2, k)); }
@@ -685,12 +766,17 @@ document.addEventListener("keydown", e => {
   const typing = e.target.matches("input,textarea,select");
   if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z" && !typing){ e.preventDefault(); doUndo(); return; }
   if(typing){ if(e.key==="Escape") e.target.blur(); return; }
-  if(e.key==="Delete" || e.key==="Backspace"){ if(sel){ e.preventDefault(); deleteSelection(); } }
+  if(e.key===" " && !e.target.closest("button")){ e.preventDefault(); if(!spaceDown){ spaceDown = true; board.classList.add("grab"); } return; }
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="a"){ e.preventDefault(); selectNodes(cur().nodes.map(n => n.id)); renderSelOnly(); return; }
+  if(e.key==="Delete" || e.key==="Backspace"){ if(sel || multi.size){ e.preventDefault(); deleteSelection(); } }
   else if(e.key==="Enter"){ if(sel && sel.kind==="node") enter(sel.id); }
-  else if(e.key==="Escape"){ if(sel){ sel=null; render(); } else up(); }
+  else if(e.key==="Escape"){ if(sel || multi.size){ clearSel(); render(); } else up(); }
   else if(e.key==="+"||e.key==="="){ zoomCenter(1.2); }
   else if(e.key==="-"){ zoomCenter(1/1.2); }
 });
+
+document.addEventListener("keyup", e => { if(e.key===" "){ spaceDown = false; board.classList.remove("grab"); } });
+addEventListener("blur", () => { spaceDown = false; board.classList.remove("grab"); });
 
 /* ---------- toast ---------- */
 function showToast(msg, actions){
