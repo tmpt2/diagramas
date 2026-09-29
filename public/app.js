@@ -339,6 +339,11 @@ function addNode(type, wx, wy){
 function addEdge(from, to){
   const d = cur();
   if(from===to || d.edges.some(e=>e.from===from && e.to===to)) return;
+  const rev = d.edges.find(e=>e.from===to && e.to===from);
+  if(rev){ // linking back over an existing link makes it two-way
+    if(!rev.both){ snapshot(); rev.both = true; touch(d.id); }
+    multi.clear(); sel = {kind:"edge", id:rev.id}; render(); return;
+  }
   snapshot();
   const e = {id:uid("e"), from, to, label:"", style:"solid"};
   d.edges.push(e); multi.clear(); sel = {kind:"edge", id:e.id};
@@ -363,6 +368,24 @@ function deleteSelection(force){
   d.edges = d.edges.filter(e=>!ids.has(e.from) && !ids.has(e.to));
   gone.forEach(g => { delete diagrams[g.id]; deleted.add(g.id); pending.add(g.id); });
   clearSel(); touch(d.id); render();
+}
+// Delete a box's inner level (and every level below it) but keep the box itself.
+function deleteDetail(pid, nodeId, force){
+  if(isReadOnly) return;
+  const p = diagrams[pid], n = p && nodeById(nodeId, p), ch = childOf(n); if(!ch) return;
+  const inner = countDeep(ch);
+  if(inner && !force){
+    showToast(`Apagar o nível ${ch.level} de “${n.label}” e as ${inner} caixas lá dentro? A caixa “${n.label}” mantém-se.`, [
+      {t:"Apagar nível", cls:"danger", fn:()=>deleteDetail(pid, nodeId, true)}, {t:"Cancelar"}]);
+    return;
+  }
+  const gone = [ch, ...descendants(ch)];
+  undo.push({id:"__multi:"+p.id, json:JSON.stringify([JSON.parse(JSON.stringify(p)), ...gone])}); $("undoBtn").disabled=false;
+  delete n.childId;
+  gone.forEach(g => { delete diagrams[g.id]; deleted.add(g.id); pending.add(g.id); });
+  touch(p.id);
+  if(currentId !== p.id){ currentId = p.id; try{ localStorage.setItem(curKey(), p.id); }catch(e){} }
+  selectNodes([n.id]); render();
 }
 function enter(nodeId){
   const d = cur(), n = nodeById(nodeId); if(!n) return;
@@ -454,7 +477,7 @@ function renderEdges(temp){
   d.edges.forEach(e => {
     const g = edgeGeom(e, d); if(!g) return;
     const s = sel && sel.kind==="edge" && sel.id===e.id;
-    h += `<g class="${s?"sel":""}" data-edge="${e.id}"><path class="hit" d="${g.d}" data-edge="${e.id}"/><path class="vis ${e.style==="dashed"?"dashed":""}" d="${g.d}" marker-end="url(#${s?"arrSel":"arr"})"/></g>`;
+    h += `<g class="${s?"sel":""}" data-edge="${e.id}"><path class="hit" d="${g.d}" data-edge="${e.id}"/><path class="vis ${e.style==="dashed"?"dashed":""}" d="${g.d}" marker-end="url(#${s?"arrSel":"arr"})"${e.both?` marker-start="url(#${s?"arrSel":"arr"})"`:""}/></g>`;
     if(e.label) labels.push(`<div class="elabel${s?" sel":""}" data-edge="${e.id}" data-s="left:${g.mid.x}px;top:${g.mid.y}px">${esc(e.label)}</div>`);
   });
   if(temp) h += `<path class="temp" d="${temp}"/>`;
@@ -502,16 +525,17 @@ function renderInspector(){
       <div class="field"><label>Cor</label><div class="swatches" id="f-color">${COLORS.map(c=>`<button class="sw${(n.color||null)===c?" on":""}"${dis} data-color="${c||""}" aria-label="${c?"Cor "+c:"Cor do nível"}" data-s="background:${c==="ink"?"var(--ink)":c?`var(--${c})`:`linear-gradient(135deg,${lvColor(d.level)} 50%,var(--surface) 50%)`}"></button>`).join("")}</div></div>
       ${canDeep ? `<div class="drill"><div class="row"><span class="lv" data-s="--lc:${lvColor(d.level+1)}">N${d.level+1}</span>${LEVELS[d.level].name}</div>
         <p>${ch && ch.nodes.length ? `Este elemento tem ${ch.nodes.length} caixas e ${ch.edges.length} ligações no nível ${d.level+1}.` : `Ainda sem detalhe. Entre para desenhar o fluxo interno deste elemento.`}</p>
-        <button class="pbig" id="f-enter">${ch && ch.nodes.length ? "Abrir nível "+(d.level+1) : "Detalhar no nível "+(d.level+1)} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>`
+        <button class="pbig" id="f-enter">${ch && ch.nodes.length ? "Abrir nível "+(d.level+1) : "Detalhar no nível "+(d.level+1)} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        ${ch && !isReadOnly ? `<button class="dbtn" id="f-deldetail">Apagar nível ${d.level+1} (mantém a caixa)</button>` : ""}</div>`
       : d.level >= MAX_LEVEL ? `<div class="drill"><p>Nível ${MAX_LEVEL} é o mais detalhado. Use a descrição para registar os passos.</p></div>` : ""}
       ${isReadOnly ? "" : `<button class="dbtn" id="f-del">Apagar caixa</button>`}`;
   } else if(s && sel.kind==="edge"){
     const e = s, A = nodeById(e.from), B = nodeById(e.to);
     el.innerHTML = `<h2>Ligação</h2>
-      <div class="meta">${esc(A&&A.label)} → ${esc(B&&B.label)}</div>
+      <div class="meta">${esc(A&&A.label)} ${e.both?"↔":"→"} ${esc(B&&B.label)}</div>
       <div class="field"><label for="f-elabel">Texto da ligação</label><input id="f-elabel" value="${esc(e.label)}" placeholder="ex.: envia pedido, sim, não" maxlength="80"${dis}></div>
       <div class="field"><label>Traço</label><div class="seg" id="f-style"><button data-style="solid" class="${e.style!=="dashed"?"on":""}"${dis}>Contínuo</button><button data-style="dashed" class="${e.style==="dashed"?"on":""}"${dis}>Tracejado</button></div></div>
-      <div class="field"><label>Sentido</label><div class="seg"><button id="f-flip"${dis}>Inverter sentido</button></div></div>
+      <div class="field"><label>Sentido</label><div class="seg"><button id="f-flip"${e.both?" disabled":dis}>Inverter sentido</button><button id="f-both" class="${e.both?"on":""}"${dis}>Duplo sentido</button></div></div>
       ${isReadOnly ? "" : `<button class="dbtn" id="f-del">Apagar ligação</button>`}`;
   } else {
     const deep = countDeep(d) - d.nodes.length;
@@ -520,7 +544,8 @@ function renderInspector(){
       <div class="meta">${LEVELS[d.level-1].name} — ${LEVELS[d.level-1].tip}</div>
       <div class="stats"><div><b>${d.nodes.length}</b><span>caixas</span></div><div><b>${d.edges.length}</b><span>ligações</span></div>
         <div><b>${d.nodes.filter(n=>childOf(n)&&childOf(n).nodes.length).length}</b><span>com detalhe</span></div><div><b>${deep}</b><span>caixas abaixo</span></div></div>
-      ${d.parentId ? `<button class="tbtn" id="f-up" data-s="width:100%;justify-content:center">Subir para o nível ${d.level-1}</button>` : `<p data-s="color:var(--muted);font-size:12.5px;line-height:1.5;margin:0">Selecione uma caixa para a editar. Faça duplo clique numa caixa para descer ao nível seguinte (até ao nível ${MAX_LEVEL}).</p>`}`;
+      ${d.parentId ? `<button class="tbtn" id="f-up" data-s="width:100%;justify-content:center">Subir para o nível ${d.level-1}</button>
+        ${isReadOnly ? "" : `<button class="dbtn" id="f-dellevel" data-s="margin-top:10px">Apagar este nível</button>`}` :`<p data-s="color:var(--muted);font-size:12.5px;line-height:1.5;margin:0">Selecione uma caixa para a editar. Faça duplo clique numa caixa para descer ao nível seguinte (até ao nível ${MAX_LEVEL}).</p>`}`;
   }
   if(focused && $(focused)){ const f=$(focused); f.focus(); if(f.setSelectionRange && f.value!=null){ try{ const L=f.value.length; f.setSelectionRange(L,L);}catch(e){} } }
   const hasSel = !!s || multi.size > 0;
@@ -550,11 +575,14 @@ $("insp").addEventListener("click", e => {
   if(b.id==="f-enter") return enter(sel.id);
   if(b.id==="f-up") return up();
   if(b.id==="f-del") return deleteSelection();
+  if(b.id==="f-deldetail") return deleteDetail(d.id, sel.id);
+  if(b.id==="f-dellevel") return deleteDetail(d.parentId, d.parentNodeId);
   if(isReadOnly) return;
   if(b.dataset.type){ snapshot(); const n=findSel(), t=TYPES[b.dataset.type]; const cx=n.x+n.w/2, cy=n.y+n.h/2; n.type=b.dataset.type; n.w=t.w; n.h=t.h; n.x=Math.round((cx-t.w/2)/10)*10; n.y=Math.round((cy-t.h/2)/10)*10; touch(d.id); render(); }
   else if(b.dataset.color!==undefined){ snapshot(); selNodeIds().forEach(id => { const n = nodeById(id); if(n) n.color = b.dataset.color||null; }); touch(d.id); render(); }
   else if(b.dataset.style){ snapshot(); findSel().style=b.dataset.style; touch(d.id); render(); }
   else if(b.id==="f-flip"){ snapshot(); const x=findSel(); [x.from,x.to]=[x.to,x.from]; touch(d.id); render(); }
+  else if(b.id==="f-both"){ snapshot(); const x=findSel(); if(x.both) delete x.both; else x.both=true; touch(d.id); render(); }
 });
 
 /* ---------- palette ---------- */
