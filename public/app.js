@@ -577,7 +577,7 @@ function toWorld(cx, cy){ const r = board.getBoundingClientRect(), v = view(); r
 const marqueeEl = document.createElement("div");
 marqueeEl.className = "marquee hide";
 board.appendChild(marqueeEl);
-let spaceDown = false;       // Space held: dragging with the mouse pans instead of selecting
+let spaceDown = false;       // Space held: dragging the background with the mouse selects instead of panning
 let noCtxMenu = false;       // the right button was just used to pan
 function startPan(e){
   const v = view();
@@ -597,8 +597,8 @@ board.addEventListener("pointerdown", e => {
     drag = {kind:"pinch", dist:Math.hypot(a.x-b.x,a.y-b.y), k:v.k, mid:{x:(a.x+b.x)/2,y:(a.y+b.y)/2}, vx:v.x, vy:v.y};
     return;
   }
-  // middle or right button, or Space + drag: pan the board
-  if(mouse && (e.button !== 0 || spaceDown)){ startPan(e); return; }
+  // middle or right button: pan the board
+  if(mouse && e.button !== 0){ startPan(e); return; }
   const t = e.target;
   const portEl = t.closest("[data-port]"), deepEl = t.closest("[data-deep]"), nodeEl = t.closest("[data-node]"), edgeEl = t.closest("[data-edge]");
   const now = performance.now();
@@ -630,7 +630,8 @@ board.addEventListener("pointerdown", e => {
   const dbl = lastTap.id==="__bg" && now-lastTap.t < 380 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 12;
   lastTap = {t:now, id:"__bg", x:e.clientX, y:e.clientY};
   if(dbl){ const w = toWorld(e.clientX, e.clientY); addNode("activity", w.x, w.y); drag=null; return; }
-  if(!mouse){ startPan(e); return; }  // on touch screens, one finger pans
+  // dragging the background pans; with Space held, the mouse draws a selection rectangle instead
+  if(!mouse || !spaceDown){ startPan(e); return; }
   const add = e.shiftKey || e.ctrlKey || e.metaKey;
   drag = {kind:"marquee", sx:e.clientX, sy:e.clientY, w0:toWorld(e.clientX, e.clientY), add, base:add ? selNodeIds() : [], ids:null, moved:false};
 });
@@ -700,7 +701,7 @@ function endPointer(e){
   board.classList.remove("panning");
   if(d.kind==="pan"){
     if(d.button === 2 && d.moved) noCtxMenu = true;
-    if(!d.moved && e.type==="pointerup" && d.button === 0 && !spaceDown && (sel || multi.size)){ clearSel(); renderSelOnly(); }
+    if(!d.moved && e.type==="pointerup" && d.button === 0 && (sel || multi.size)){ clearSel(); renderSelOnly(); }
   }
   if(d.kind==="marquee"){
     marqueeEl.classList.add("hide");
