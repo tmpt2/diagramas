@@ -8,7 +8,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/tmpt2/diagramas</Support>
   <Project>https://github.com/tmpt2/diagramas</Project>
-  <Overview>Camadas: editor de diagramas de fluxo em até 4 níveis, com contas de utilizador. Guarda tudo numa base de dados MariaDB/MySQL (por exemplo o contentor MariaDB do Unraid). O contentor não precisa de volumes.</Overview>
+  <Overview>Camadas: editor de diagramas de fluxo em até 4 níveis, com contas de utilizador. Guarda tudo numa base de dados MariaDB/MySQL (por exemplo o contentor MariaDB do Unraid). Os ficheiros anexados às caixas ficam numa pasta do appdata.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:3000]/</WebUI>
   <Icon>https://raw.githubusercontent.com/tmpt2/diagramas/main/public/favicon.svg</Icon>
@@ -25,6 +25,8 @@
   <Config Name="ALLOW_REGISTRATION" Target="ALLOW_REGISTRATION" Default="false" Mode="" Description="true = qualquer pessoa pode criar conta; false = só o administrador cria contas" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="EXAMPLE_FOR_NEW_USERS" Target="EXAMPLE_FOR_NEW_USERS" Default="true" Mode="" Description="Novas contas recebem o diagrama de exemplo" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
   <Config Name="SESSION_DAYS" Target="SESSION_DAYS" Default="30" Mode="" Description="Duração da sessão em dias" Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+  <Config Name="Ficheiros anexados" Target="/data/files" Default="/mnt/user/appdata/camadas/files" Mode="rw" Description="Pasta onde ficam os ficheiros anexados às caixas. Tem de pertencer ao utilizador 1000 (chown -R 1000:1000 /mnt/user/appdata/camadas/files)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/camadas/files</Config>
+  <Config Name="MAX_FILE_MB" Target="MAX_FILE_MB" Default="25" Mode="" Description="Tamanho máximo (MB) de cada ficheiro anexado a uma caixa" Type="Variable" Display="advanced" Required="false" Mask="false">25</Config>
   <Config Name="DB_TABLE_PREFIX" Target="DB_TABLE_PREFIX" Default="camadas_" Mode="" Description="Prefixo das tabelas" Type="Variable" Display="advanced" Required="false" Mask="false">camadas_</Config>
   <Config Name="DB_SSL" Target="DB_SSL" Default="false" Mode="" Description="Ligação cifrada à MariaDB: false | true | skip-verify" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="APP_NAME" Target="APP_NAME" Default="Camadas" Mode="" Description="Nome mostrado na aplicação" Type="Variable" Display="advanced" Required="false" Mask="false">Camadas</Config>

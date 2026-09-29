@@ -1,6 +1,9 @@
 "use strict";
 const http = require("http");
 const fs = require("fs");
+const crypto = require("crypto");
+const { Transform } = require("stream");
+const { pipeline } = require("stream/promises");
 const path = require("path");
 const config = require("./config");
 const db = require("./db");
@@ -229,7 +232,7 @@ route("GET", "/healthz", async () => {
 }, { public: true });
 
 route("GET", "/api/config", async () => ({
-  appName: config.appName, allowRegistration: config.allowRegistration,
+  appName: config.appName, allowRegistration: config.allowRegistration, maxFileMb: config.maxFileMb,
 }), { public: true });
 
 route("POST", "/api/auth/register", async ({ req, res, body }) => {
@@ -403,6 +406,7 @@ route("DELETE", "/api/docs/:id", async ({ user, params }) => {
   const a = await need("doc", user, intId(params.id), "owner");
   await q(`DELETE FROM ${T.docs} WHERE id = ?`, [a.id]);
   presence.delete(a.id);
+  await fs.promises.rm(docDir(a.id), { recursive: true, force: true }).catch(e => log("Erro ao apagar ficheiros:", e.message));
   return { ok: true };
 });
 
@@ -412,9 +416,132 @@ route("POST", "/api/docs/:id/duplicate", async ({ user, params }) => {
   const sheets = rows.map(r => JSON.parse(r.data));
   // the copy goes to the same project only if the user owns it
   const folderId = a.owner_id === user.id ? a.folder_id : null;
-  const id = await tx(exec => createDoc(exec, { ownerId: user.id, folderId, name: cleanName(a.name + " (cópia)", "Cópia"), sheets }));
+  const id = await tx(async exec => {
+    const newId = await createDoc(exec, { ownerId: user.id, folderId, name: cleanName(a.name + " (cópia)", "Cópia"), sheets });
+    // attached files keep their ids, so the copied boxes still point at them
+    const files = await exec(`SELECT id FROM ${T.files} WHERE doc_id = ?`, [a.id]);
+    if (files.length) await fs.promises.mkdir(docDir(newId), { recursive: true });
+    for (const f of files) {
+      await fs.promises.copyFile(filePath(a.id, f.id), filePath(newId, f.id)).catch(e => { if (e.code !== "ENOENT") throw e; });
+    }
+    await exec(`INSERT INTO ${T.files} (doc_id, id, name, mime, size, created_by)
+                SELECT ?, id, name, mime, size, ? FROM ${T.files} WHERE doc_id = ?`, [newId, user.id, a.id]);
+    return newId;
+  });
   return { id };
 });
+
+/* ----- files attached to boxes -----
+ * The bytes are kept on disk (FILES_DIR/<doc id>/<file id>, a Docker volume); the database only
+ * lists them (name, type, size), and the sheets list each box's files as {id, name, size, type}. */
+const docDir = docId => path.join(config.filesDir, String(docId));
+const filePath = (docId, fid) => path.join(docDir(docId), fid); // fid always matches ID_RE: no dots or slashes
+
+// Stream the request body into a file, refusing anything bigger than `limit` bytes.
+async function saveUpload(req, dest, limit, tooBig) {
+  if (Number(req.headers["content-length"]) > limit) { req.resume(); fail(413, tooBig); }
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = dest + ".part";
+  let size = 0;
+  const counter = new Transform({ transform(c, _, cb) { size += c.length; cb(size > limit ? new HttpError(413, tooBig) : null, c); } });
+  try {
+    await pipeline(req, counter, fs.createWriteStream(tmp));
+    await fs.promises.rename(tmp, dest);
+  } catch (e) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
+  return size;
+}
+
+// Upload: the raw file is the request body; its name comes URL-encoded in X-File-Name.
+route("POST", "/api/docs/:id/files", async ({ user, params, req }) => {
+  const a = await need("doc", user, intId(params.id), "edit");
+  let name = "";
+  try { name = decodeURIComponent(String(req.headers["x-file-name"] || "")); } catch (_) {}
+  name = name.replace(/[\u0000-\u001f\u007f/\\]/g, "_").trim().slice(0, 200) || "ficheiro";
+  let mime = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (!/^[\w.+-]+\/[\w.+-]+$/.test(mime) || mime.length > 120) mime = "application/octet-stream";
+  const id = crypto.randomBytes(12).toString("base64url"), dest = filePath(a.id, id);
+  let size;
+  try {
+    size = await saveUpload(req, dest, config.maxFileMb * 1024 * 1024, `O ficheiro é maior que ${config.maxFileMb} MB.`);
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    log("Erro ao gravar ficheiro:", e.code || "", e.message);
+    fail(500, "Não foi possível gravar o ficheiro no servidor.");
+  }
+  try {
+    await q(`INSERT INTO ${T.files} (doc_id, id, name, mime, size, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
+      [a.id, id, name, mime, size, user.id]);
+  } catch (e) { await fs.promises.rm(dest, { force: true }).catch(() => {}); throw e; }
+  return { file: { id, name, size, type: mime } };
+}, { rawBody: true });
+
+// Only these open in the browser (?inline=1); everything else is always downloaded, so an uploaded
+// HTML or SVG file can never run as a page of this site.
+const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"]);
+route("GET", "/api/docs/:id/files/:fid", async ({ user, params, url, res }) => {
+  const a = await need("doc", user, intId(params.id), "view");
+  if (!ID_RE.test(params.fid)) fail(400, "Identificador inválido.");
+  const f = (await q(`SELECT name, mime FROM ${T.files} WHERE doc_id = ? AND id = ?`, [a.id, params.fid]))[0];
+  const file = filePath(a.id, params.fid);
+  const st = f && await fs.promises.stat(file).catch(() => null);
+  if (!st) fail(404, "Este ficheiro já não existe.");
+  const inline = url.searchParams.get("inline") === "1" && INLINE_TYPES.has(f.mime);
+  const ascii = f.name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    "Content-Type": inline ? (f.mime === "text/plain" ? "text/plain; charset=utf-8" : f.mime) : "application/octet-stream",
+    "Content-Length": st.size,
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+    "Cache-Control": "private, no-cache",
+  });
+  fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
+});
+
+// Files no box points at any more (removed from a box, or their level/box was deleted) are kept for a
+// week, so that undoing the change brings them back, and then deleted. Folders of diagrams that no
+// longer exist (deleted diagram or user) and interrupted uploads are removed too.
+async function purgeOrphanFiles() {
+  const docs = await q(`SELECT DISTINCT doc_id FROM ${T.files} WHERE created_at < NOW() - INTERVAL 7 DAY`);
+  for (const { doc_id } of docs) {
+    const used = new Set();
+    for (const r of await q(`SELECT data FROM ${T.sheets} WHERE doc_id = ? AND deleted = 0`, [doc_id])) {
+      try { JSON.parse(r.data).nodes.forEach(n => (Array.isArray(n.files) ? n.files : []).forEach(f => used.add(String(f && f.id)))); }
+      catch (_) { used.add("*"); } // unreadable sheet: keep everything
+    }
+    if (used.has("*")) continue;
+    const old = await q(`SELECT id FROM ${T.files} WHERE doc_id = ? AND created_at < NOW() - INTERVAL 7 DAY`, [doc_id]);
+    const gone = old.map(r => r.id).filter(id => !used.has(id));
+    if (gone.length) {
+      await q(`DELETE FROM ${T.files} WHERE doc_id = ? AND id IN (?)`, [doc_id, gone]);
+      for (const id of gone) await fs.promises.rm(filePath(doc_id, id), { force: true });
+      log(`Ficheiros sem caixa apagados: ${gone.length} (diagrama ${doc_id})`);
+    }
+  }
+  const dirs = await fs.promises.readdir(config.filesDir).catch(() => []);
+  const alive = new Set((await q(`SELECT id FROM ${T.docs}`)).map(r => String(r.id)));
+  for (const d of dirs) {
+    if (!/^\d+$/.test(d)) continue;
+    if (!alive.has(d)) { await fs.promises.rm(docDir(d), { recursive: true, force: true }); log(`Pasta de ficheiros sem diagrama apagada: ${d}`); continue; }
+    for (const f of await fs.promises.readdir(docDir(d)).catch(() => [])) {
+      if (!f.endsWith(".part")) continue;
+      const st = await fs.promises.stat(path.join(docDir(d), f)).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > 86400e3) await fs.promises.rm(path.join(docDir(d), f), { force: true });
+    }
+  }
+}
+async function checkFilesDir() {
+  try {
+    await fs.promises.mkdir(config.filesDir, { recursive: true });
+    await fs.promises.access(config.filesDir, fs.constants.W_OK);
+    log(`Ficheiros anexados guardados em ${config.filesDir}`);
+  } catch (e) {
+    log(`AVISO: sem permissão para escrever em FILES_DIR (${config.filesDir}): ${e.code || e.message}. ` +
+        "Não vai ser possível anexar ficheiros às caixas.");
+  }
+}
 
 // Save one sheet. baseRev is the revision the client's copy started from; if someone else saved
 // in the meantime the answer is 409 with the current version, which the client merges and resends.
@@ -556,9 +683,9 @@ async function handle(req, res) {
     const user = token ? await auth.userFromToken(token) : null;
     if (!r.opts.public && !user) fail(401, "Sessão terminada. Entre novamente.");
     if (r.opts.admin && !user.isAdmin) fail(403, "Só administradores.");
-    const body = req.method === "GET" || req.method === "DELETE" ? {} : await readBody(req);
+    const body = req.method === "GET" || req.method === "DELETE" || r.opts.rawBody ? {} : await readBody(req);
     const out = await r.handler({ req, res, url, params, body, user, token });
-    send(res, 200, out);
+    if (!res.headersSent) send(res, 200, out); // file downloads send their own response
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message, ...e.extra });
     log("Erro:", req.method, pathname, e.code || "", e.message);
@@ -594,7 +721,9 @@ async function main() {
   await db.waitForDb(log);
   await db.migrate(log);
   await ensureAdmin();
+  await checkFilesDir();
   setInterval(() => auth.purgeExpired().catch(() => {}), 60 * 60e3).unref();
+  setInterval(() => purgeOrphanFiles().catch(e => log("Erro ao limpar ficheiros:", e.message)), 6 * 60 * 60e3).unref();
   const server = http.createServer((req, res) => {
     handle(req, res).catch(e => { log("Erro inesperado:", e.message); try { send(res, 500, { error: "Erro no servidor." }); } catch (_) {} });
   });

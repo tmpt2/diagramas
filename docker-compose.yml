@@ -17,6 +17,9 @@ services:
     extra_hosts:
       # Permite usar DB_HOST=host.docker.internal quando a MariaDB corre no próprio servidor
       - "host.docker.internal:host-gateway"
+    volumes:
+      # Ficheiros anexados às caixas (o resto dos dados está na MariaDB)
+      - camadas_files:/data/files
 
   # Opcional: HTTPS automático com Let's Encrypt. Só arranca com --profile https.
   caddy:
@@ -35,5 +38,6 @@ services:
       - caddy_config:/config
 
 volumes:
+  camadas_files:
   caddy_data:
   caddy_config:

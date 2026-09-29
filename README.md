@@ -46,11 +46,16 @@ A imagem é construída automaticamente pelo GitHub Actions a cada push para `ma
    ```
 3. **Adicionar.** Separador **Docker** → **Add Container** → em *Template* escolha **camadas**.
    Preencha `DB_HOST` (o IP do Unraid, ex. `192.168.1.10`), `DB_PASSWORD`, `ADMIN_EMAIL` e
-   `ADMIN_PASSWORD` → **Apply**.
+   `ADMIN_PASSWORD` → **Apply**. Antes, crie a pasta dos ficheiros anexados com o dono certo (o
+   contentor corre como o utilizador 1000):
+   ```bash
+   mkdir -p /mnt/user/appdata/camadas/files && chown -R 1000:1000 /mnt/user/appdata/camadas/files
+   ```
 4. Abra `http://IP-do-unraid:3000` (ou clique no ícone → **WebUI**).
 
 Sem template: em **Add Container** ponha *Repository* `ghcr.io/tmpt2/diagramas:latest`, mapeie a porta
-3000 e crie as variáveis `DB_HOST`, `DB_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` à mão.
+3000, mapeie a pasta `/data/files` do contentor para `/mnt/user/appdata/camadas/files` e crie as
+variáveis `DB_HOST`, `DB_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` à mão.
 
 Para HTTPS a partir da internet use o Nginx Proxy Manager / SWAG que já tenha no Unraid, apontando para
 `IP-do-unraid:3000`. **Atualizar:** separador Docker → *Check for Updates* → *Apply update*.
@@ -202,6 +207,14 @@ e aceda por `http://IP-do-servidor:3000`. Use só numa rede de confiança.
   de 4 segundos, e os avatares no topo mostram quem mais está a ver. Se duas pessoas mexerem ao mesmo
   tempo, as alterações são juntadas caixa a caixa. Só quando as duas mudam o mesmo campo da mesma caixa
   fica a última alteração.
+- **Ficheiros nas caixas.** Com uma caixa selecionada, **Adicionar ficheiros…** no painel da direita
+  anexa ficheiros do computador; também se podem arrastar do computador para cima da caixa. Quem pode ver
+  o diagrama pode abrir e descarregar os ficheiros; quem pode editar pode juntar e retirar. Cada ficheiro
+  tem no máximo `MAX_FILE_MB` (25 MB por omissão). Os ficheiros ficam no volume Docker `camadas_files`
+  (pasta `/data/files` do contentor, uma subpasta por diagrama); a MariaDB só guarda a lista (tabela
+  `camadas_files`). Um ficheiro retirado de todas as caixas é apagado ao fim de 7 dias (até lá,
+  **Anular** repõe-no); apagar um diagrama apaga os seus ficheiros.
+  A exportação em JSON não inclui os ficheiros, só a lista de nomes.
 - Só o dono pode partilhar, mover ou apagar. Quem recebeu uma partilha pode sair dela no menu **⋯**.
 - **Exportar** (dentro do diagrama ou no menu **⋯**) guarda um diagrama num ficheiro JSON. **Importar**
   cria sempre um diagrama novo a partir de um ficheiro, incluindo os exportados da versão que usava no Claude.
@@ -231,14 +244,21 @@ docker compose down
 
 ## Cópias de segurança
 
-Os dados estão todos na MariaDB (o contentor não guarda nada). Exemplo de cópia diária (cron):
+Os diagramas estão na MariaDB e os ficheiros anexados às caixas no volume Docker `camadas_files`.
+Copie os dois. Exemplo de cópia diária (cron):
 
 ```bash
 mysqldump -u root -p --single-transaction camadas \
   camadas_users camadas_sessions camadas_folders camadas_docs camadas_sheets \
-  camadas_doc_shares camadas_folder_shares camadas_schema_migrations \
+  camadas_doc_shares camadas_folder_shares camadas_files camadas_schema_migrations \
   | gzip > /backups/camadas-$(date +%F).sql.gz
+
+# ficheiros anexados (o nome do volume leva o nome da pasta do projeto: veja "docker volume ls")
+docker run --rm -v diagramas_camadas_files:/data:ro -v /backups:/backups alpine \
+  tar czf /backups/camadas-ficheiros-$(date +%F).tar.gz -C /data .
 ```
+
+No Unraid, os ficheiros estão em `/mnt/user/appdata/camadas/files` (incluídos na cópia do appdata).
 
 ## Atualizar para uma versão nova
 
@@ -258,6 +278,8 @@ As alterações à estrutura das tabelas, quando existirem, são aplicadas autom
 | `ER_BAD_DB_ERROR` | A base de dados `DB_NAME` não existe: corra o script SQL |
 | `ENOTFOUND` | `DB_HOST` com nome errado. `host.docker.internal` precisa do `extra_hosts` do compose |
 | Entra mas volta ao ecrã de entrada | Está em HTTP com `COOKIE_SECURE=true`. Use HTTPS ou `COOKIE_SECURE=false` |
+| `AVISO: sem permissão para escrever em FILES_DIR` | A pasta montada em `/data/files` não pertence ao utilizador 1000: `chown -R 1000:1000 <pasta>` |
+| Erro `413` ao enviar um ficheiro grande | `client_max_body_size` do nginx (ou o limite do proxy) menor que `MAX_FILE_MB` |
 | `AVISO: não existe nenhum administrador` | Defina `ADMIN_EMAIL`/`ADMIN_PASSWORD` ou use `cli.js create-admin` |
 
 Para ver o IP de onde o contentor chega à MariaDB: `docker network inspect bridge | grep Gateway`.

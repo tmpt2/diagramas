@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs");
+const path = require("path");
 
 function env(name, def) {
   const v = process.env[name];
@@ -45,6 +46,9 @@ const config = {
   sessionDays: int("SESSION_DAYS", 30),
   allowRegistration: bool("ALLOW_REGISTRATION", false),
   exampleForNewUsers: bool("EXAMPLE_FOR_NEW_USERS", true),
+  // Files attached to boxes: where they are kept (a Docker volume) and the largest allowed.
+  filesDir: path.resolve(env("FILES_DIR", path.join(__dirname, "..", "data", "files"))),
+  maxFileMb: Math.max(1, int("MAX_FILE_MB", 25)),
   admin: {
     email: env("ADMIN_EMAIL", "").trim().toLowerCase(),
     password: secret("ADMIN_PASSWORD"),

@@ -113,6 +113,8 @@ button{cursor:pointer}
 .node.sel{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent),var(--shadow-lift)}
 .node.dragging{box-shadow:var(--shadow-lift);cursor:grabbing}
 .node.drop{border-color:var(--accent);border-style:dashed}
+.node.filedrop{outline:2px dashed var(--accent);outline-offset:4px}
+.node .clip{position:absolute;top:-10px;left:-10px;display:flex;align-items:center;gap:3px;background:var(--surface);color:var(--muted);border:1px solid var(--line-strong);font-family:var(--mono);font-size:10.5px;font-weight:600;padding:1px 6px 1px 5px;border-radius:999px;box-shadow:var(--shadow)}
 .node.t-event{border-radius:999px}
 .node.t-system{border-style:dashed}
 .node.t-note{background:var(--note);color:var(--note-ink);border-color:transparent;border-radius:2px;text-align:left;align-items:flex-start;justify-content:flex-start}
@@ -179,6 +181,17 @@ button{cursor:pointer}
 :root[data-theme="dark"] .pbig{color:#0E1316}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .pbig{color:#0E1316}}
 .pbig:hover{filter:brightness(1.07)}
+.files{display:flex;flex-direction:column;gap:5px}
+.file{display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:8px;padding:5px 4px 5px 10px;background:var(--surface)}
+.file>a:first-child{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;color:var(--ink);text-decoration:none}
+.file>a:first-child:hover .fn{text-decoration:underline}
+.file .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.file .fs{color:var(--muted);font-family:var(--mono);font-size:11px;white-space:nowrap}
+.file .fx{display:flex;border:0;background:none;color:var(--muted);padding:4px;border-radius:6px;cursor:pointer}
+.file .fx:hover{color:var(--ink);background:var(--surface-2)}
+.file button.fx:hover{color:var(--danger)}
+.field label.fadd{width:100%;justify-content:center;cursor:pointer;margin-top:2px;font-size:13px;color:var(--ink)}
+.fhint{color:var(--muted);font-size:11.5px;line-height:1.4;margin-top:2px}
 .dbtn{border:1px solid var(--line);background:none;color:var(--danger);border-radius:8px;padding:8px 12px;width:100%;margin-top:6px}
 .dbtn:hover{border-color:var(--danger)}
 .insp .meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin:-4px 0 14px}

@@ -12,6 +12,7 @@ const T = {
   sheets: `\`${P}sheets\``,
   docShares: `\`${P}doc_shares\``,
   folderShares: `\`${P}folder_shares\``,
+  files: `\`${P}files\``,
   migrations: `\`${P}schema_migrations\``,
 };
 
@@ -140,6 +141,21 @@ const MIGRATIONS = [
       }
     }
   }],
+  // Files attached to boxes. The bytes are on disk (FILES_DIR); this lists them per diagram, so that
+  // only people with access to the diagram can download them.
+  [6, `CREATE TABLE IF NOT EXISTS ${T.files} (
+      doc_id INT UNSIGNED NOT NULL,
+      id VARCHAR(32) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      mime VARCHAR(120) NOT NULL,
+      size BIGINT UNSIGNED NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_by INT UNSIGNED NULL,
+      PRIMARY KEY (doc_id, id),
+      KEY idx_created (created_at),
+      CONSTRAINT fk_${P}files_doc FOREIGN KEY (doc_id) REFERENCES ${T.docs} (id) ON DELETE CASCADE,
+      CONSTRAINT fk_${P}files_user FOREIGN KEY (created_by) REFERENCES ${T.users} (id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`],
 ];
 
 async function waitForDb(log, attempts = 30) {

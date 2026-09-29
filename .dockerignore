@@ -5,3 +5,4 @@ node_modules
 unraid
 *.log
 backups
+data

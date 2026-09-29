@@ -12,6 +12,11 @@ RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY src ./src
 COPY public ./public
 
+# Ficheiros anexados às caixas: montar aqui um volume (ver docker-compose.yml).
+# A pasta pertence ao utilizador node, e um volume novo herda essas permissões.
+ENV FILES_DIR=/data/files
+RUN mkdir -p /data/files && chown node:node /data/files
+
 USER node
 EXPOSE 3000
 

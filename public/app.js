@@ -165,13 +165,14 @@ function conflict(id, d){
   render();
 }
 let isReadOnly = false;
+let uploading = 0;          // files being sent to the server
 function setStatus(){
-  const st = $("status"), busy = pending.size || inflight.size;
+  const st = $("status"), busy = pending.size || inflight.size || uploading;
   st.className = "status doc-only" + (saveError ? " err" : busy ? " busy" : isReadOnly ? " local" : "");
-  st.querySelector("span").textContent = saveError ? "Não guardado — a tentar de novo" : busy ? "A guardar…" : isReadOnly ? "Só leitura" : "Guardado";
+  st.querySelector("span").textContent = saveError ? "Não guardado — a tentar de novo" : uploading ? "A enviar ficheiros…" : busy ? "A guardar…" : isReadOnly ? "Só leitura" : "Guardado";
   st.title = saveError || (isReadOnly ? "Tem permissão para ver este diagrama, mas não para o alterar." : "");
 }
-addEventListener("beforeunload", e => { if(pending.size || inflight.size){ flush(); e.preventDefault(); e.returnValue = ""; } });
+addEventListener("beforeunload", e => { if(pending.size || inflight.size || uploading){ flush(); e.preventDefault(); e.returnValue = ""; } });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function saveAll(){
@@ -369,6 +370,52 @@ function deleteSelection(force){
   gone.forEach(g => { delete diagrams[g.id]; deleted.add(g.id); pending.add(g.id); });
   clearSel(); touch(d.id); render();
 }
+/* ---------- files attached to boxes ---------- */
+const INLINE_TYPES = ["image/png","image/jpeg","image/gif","image/webp","application/pdf","text/plain"];
+const fileUrl = (f, inline) => `api/docs/${docMeta.id}/files/${encodeURIComponent(f.id)}` + (inline ? "?inline=1" : "");
+function fmtSize(b){
+  if(b < 1024) return b + " B";
+  if(b < 1024*1024) return Math.round(b/1024) + " KB";
+  return (b/1024/1024).toFixed(b < 10*1024*1024 ? 1 : 0).replace(".", ",") + " MB";
+}
+// Send files from the computer and attach them to a box (of the sheet being viewed now).
+async function attachFiles(nodeId, list){
+  if(isReadOnly || !docMeta) return;
+  const doc = docMeta, sid = currentId, maxMb = appCfg.maxFileMb || 25;
+  const files = [...list], ok = files.filter(f => f.size <= maxMb*1024*1024), big = files.filter(f => !ok.includes(f));
+  if(big.length) showToast(`Maior que ${maxMb} MB, não enviado: ${big.map(f => f.name).join(", ")}`, [{t:"OK"}]);
+  if(!ok.length) return;
+  uploading += ok.length; setStatus();
+  const done = [];
+  for(const f of ok){
+    try{
+      let res;
+      try{
+        res = await fetch(`api/docs/${doc.id}/files`, {method:"POST", credentials:"same-origin", body:f,
+          headers:{"X-Camadas":"1", "Content-Type":f.type || "application/octet-stream", "X-File-Name":encodeURIComponent(f.name)}});
+      }catch(e){ throw new Error("Sem ligação ao servidor."); }
+      const data = await res.json().catch(() => ({}));
+      if(res.status === 401) sessionExpired();
+      if(!res.ok) throw new Error(data.error || "Erro " + res.status);
+      done.push(data.file);
+    }catch(e){ showToast(`Não foi possível enviar “${f.name}”: ${e.message}`, [{t:"OK"}]); }
+    uploading--; setStatus();
+  }
+  if(docMeta !== doc || !done.length) return;
+  const d = diagrams[sid], n = d && nodeById(nodeId, d);
+  if(!n || isReadOnly){ showToast("A caixa deixou de existir entretanto; os ficheiros não foram anexados.", [{t:"OK"}]); return; }
+  undo.push({id:d.id, json:JSON.stringify(d)}); $("undoBtn").disabled = false;
+  n.files = [...(n.files || []), ...done];
+  touch(d.id); render();
+}
+function removeFile(fid){
+  const n = findSel(); if(!n || !n.files || isReadOnly) return;
+  snapshot();
+  n.files = n.files.filter(f => f.id !== fid);
+  if(!n.files.length) delete n.files;
+  touch(cur().id); render();
+}
+
 // Delete a box's inner level (and every level below it) but keep the box itself.
 function deleteDetail(pid, nodeId, force){
   if(isReadOnly) return;
@@ -464,6 +511,7 @@ function renderNodes(){
       ${glyph}<div class="lbl">${esc(n.label)}</div>${sub?`<div class="sub">${sub}</div>`:""}
       <span class="stripe"></span>
       ${cnt ? `<span class="deep" data-deep="${n.id}" title="Abrir nível ${d.level+1}: ${cnt} caixas"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m3 8 9 4.5L21 8M3 13l9 4.5 9-4.5"/></svg>${cnt}</span>` : ""}
+      ${n.files && n.files.length ? `<span class="clip" title="${n.files.length} ${n.files.length===1?"ficheiro anexado":"ficheiros anexados"}"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m20 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>${n.files.length}</span>` : ""}
       ${n.type!=="note" ? `<span class="port" data-port="${n.id}" title="Arraste para ligar"></span>` : ""}
     </div>`;
   }).join("");
@@ -521,6 +569,11 @@ function renderInspector(){
     el.innerHTML = `<h2>${TYPES[n.type].name} · nível ${d.level}</h2>
       <div class="field"><label for="f-label">Nome</label><input id="f-label" value="${esc(n.label)}" maxlength="120"${dis}></div>
       <div class="field"><label for="f-desc">Descrição</label><textarea id="f-desc" placeholder="Responsável, entradas, saídas, regras…"${dis}>${esc(n.desc)}</textarea></div>
+      <div class="field"><label>Ficheiros</label><div class="files">${(n.files||[]).map(f => {
+          const inl = INLINE_TYPES.includes(f.type);
+          return `<div class="file"><a href="${esc(fileUrl(f, inl))}" ${inl ? 'target="_blank" rel="noopener"' : "download"} title="${inl ? "Abrir" : "Descarregar"} ${esc(f.name)}"><span class="fn">${esc(f.name)}</span><span class="fs">${fmtSize(Number(f.size)||0)}</span></a>${inl ? `<a class="fx" href="${esc(fileUrl(f))}" download title="Descarregar" aria-label="Descarregar ${esc(f.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg></a>` : ""}${isReadOnly ? "" : `<button class="fx" data-rmfile="${esc(f.id)}" title="Retirar da caixa" aria-label="Retirar ${esc(f.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg></button>`}</div>`;
+        }).join("")}${isReadOnly ? (n.files && n.files.length ? "" : `<div class="meta">Sem ficheiros.</div>`)
+        : `<label class="tbtn fadd" for="f-file" tabindex="0">Adicionar ficheiros…</label><input type="file" id="f-file" multiple hidden><div class="fhint">ou arraste ficheiros do computador para cima da caixa · até ${appCfg.maxFileMb || 25} MB cada</div>`}</div></div>
       <div class="field"><label>Tipo</label><div class="seg" id="f-type">${Object.entries(TYPES).map(([k,t])=>`<button data-type="${k}" class="${k===n.type?"on":""}"${dis}>${t.name}</button>`).join("")}</div></div>
       <div class="field"><label>Cor</label><div class="swatches" id="f-color">${COLORS.map(c=>`<button class="sw${(n.color||null)===c?" on":""}"${dis} data-color="${c||""}" aria-label="${c?"Cor "+c:"Cor do nível"}" data-s="background:${c==="ink"?"var(--ink)":c?`var(--${c})`:`linear-gradient(135deg,${lvColor(d.level)} 50%,var(--surface) 50%)`}"></button>`).join("")}</div></div>
       ${canDeep ? `<div class="drill"><div class="row"><span class="lv" data-s="--lc:${lvColor(d.level+1)}">N${d.level+1}</span>${LEVELS[d.level].name}</div>
@@ -555,7 +608,11 @@ function renderInspector(){
 
 /* ---------- inspector events ---------- */
 let editSnap = null;
-$("insp").addEventListener("focusin", e => { if(e.target.matches("input,textarea")) editSnap = JSON.stringify(cur()); });
+$("insp").addEventListener("focusin", e => { if(e.target.matches("input:not([type=file]),textarea")) editSnap = JSON.stringify(cur()); });
+$("insp").addEventListener("change", e => {
+  if(e.target.id === "f-file" && sel && sel.kind === "node"){ attachFiles(sel.id, e.target.files); e.target.value = ""; }
+});
+$("insp").addEventListener("keydown", e => { if(e.target.matches("label.fadd") && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); $("f-file").click(); } });
 $("insp").addEventListener("input", e => {
   if(isReadOnly) return;
   const d = cur(), t = e.target;
@@ -575,6 +632,7 @@ $("insp").addEventListener("click", e => {
   if(b.id==="f-enter") return enter(sel.id);
   if(b.id==="f-up") return up();
   if(b.id==="f-del") return deleteSelection();
+  if(b.dataset.rmfile) return removeFile(b.dataset.rmfile);
   if(b.id==="f-deldetail") return deleteDetail(d.id, sel.id);
   if(b.id==="f-dellevel") return deleteDetail(d.parentId, d.parentNodeId);
   if(isReadOnly) return;
@@ -752,6 +810,34 @@ board.addEventListener("pointerup", endPointer);
 board.addEventListener("pointercancel", endPointer);
 board.addEventListener("contextmenu", e => { if(noCtxMenu){ e.preventDefault(); noCtxMenu = false; } });
 
+/* ---------- dropping files from the computer onto a box ---------- */
+const hasFiles = e => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+let dropEl = null;
+function setDropEl(el){
+  if(dropEl === el) return;
+  if(dropEl) dropEl.classList.remove("filedrop");
+  dropEl = el; if(el) el.classList.add("filedrop");
+}
+board.addEventListener("dragover", e => {
+  if(!hasFiles(e)) return;
+  e.preventDefault();
+  const el = isReadOnly ? null : e.target.closest("[data-node]");
+  e.dataTransfer.dropEffect = el ? "copy" : "none";
+  setDropEl(el);
+});
+board.addEventListener("dragleave", e => { if(!board.contains(e.relatedTarget)) setDropEl(null); });
+board.addEventListener("drop", e => {
+  if(!hasFiles(e)) return;
+  e.preventDefault();
+  const el = dropEl; setDropEl(null);
+  if(isReadOnly) return;
+  if(!el){ showToast("Largue os ficheiros em cima de uma caixa.", [{t:"OK"}]); return; }
+  selectNodes([el.dataset.node]); renderSelOnly();
+  attachFiles(el.dataset.node, e.dataTransfer.files);
+});
+// a file dropped anywhere else must not make the browser leave the app to open it
+["dragover", "drop"].forEach(t => document.addEventListener(t, e => { if(hasFiles(e)) e.preventDefault(); }));
+
 /* ---------- zoom ---------- */
 function clampK(k){ return Math.min(2.5, Math.max(.2, k)); }
 function zoomAt(k, cx, cy){
@@ -795,7 +881,7 @@ document.addEventListener("keydown", e => {
   const typing = e.target.matches("input,textarea,select");
   if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z" && !typing){ e.preventDefault(); doUndo(); return; }
   if(typing){ if(e.key==="Escape") e.target.blur(); return; }
-  if(e.key===" " && !e.target.closest("button")){ e.preventDefault(); if(!spaceDown){ spaceDown = true; board.classList.add("grab"); } return; }
+  if(e.key===" " && !e.target.closest("button,a,label")){ e.preventDefault(); if(!spaceDown){ spaceDown = true; board.classList.add("grab"); } return; }
   if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="a"){ e.preventDefault(); selectNodes(cur().nodes.map(n => n.id)); renderSelOnly(); return; }
   if(e.key==="Delete" || e.key==="Backspace"){ if(sel || multi.size){ e.preventDefault(); deleteSelection(); } }
   else if(e.key==="Enter"){ if(sel && sel.kind==="node") enter(sel.id); }
